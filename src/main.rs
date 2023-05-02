@@ -125,6 +125,14 @@ fn main() {
                 .required(false)
         )
         .arg(
+            Arg::with_name("tls")
+                .help("use TLS rather than TCP")
+                .takes_value(false)
+                .long("tls")
+                .short("T")
+                .required(false)
+        )
+        .arg(
             Arg::with_name("bandwidth")
                 .help("target bandwidth in bytes/sec; this value is applied to each stream, with a default target of 1 megabit/second for all protocols (note: megabit, not mebibit); the suffixes kKmMgG can also be used for xbit and xbyte, respectively")
                 .takes_value(true)
