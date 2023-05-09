@@ -23,6 +23,7 @@ pub mod tls;
 pub mod udp;
 
 use std::error::Error;
+
 type BoxResult<T> = Result<T, Box<dyn Error>>;
 
 pub const INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);

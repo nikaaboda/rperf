@@ -36,11 +36,12 @@ use crate::protocol::messaging::{
     prepare_upload_configuration, prepare_download_configuration,
 };
 
-use crate::protocol::results::{IntervalResult, IntervalResultKind, TestResults, TcpTestResults, UdpTestResults};
+use crate::protocol::results::{IntervalResult, IntervalResultKind, TestResults, TcpTestResults, UdpTestResults, TlsTestResults};
 
 use crate::stream::TestStream;
 use crate::stream::tcp;
 use crate::stream::udp;
+use crate::stream::tls;
 
 use std::error::Error;
 type BoxResult<T> = Result<T,Box<dyn Error>>;
@@ -78,13 +79,19 @@ fn connect_to_server(address:&str, port:&u16) -> BoxResult<TcpStream> {
     Ok(stream)
 }
 
-fn prepare_test_results(is_udp:bool, stream_count:u8) -> Mutex<Box<dyn TestResults>> {
+fn prepare_test_results(is_udp:bool, is_tls:bool, stream_count:u8) -> Mutex<Box<dyn TestResults>> {
     if is_udp { //UDP
         let mut udp_test_results = UdpTestResults::new();
         for i in 0..stream_count {
             udp_test_results.prepare_index(&i);
         }
         Mutex::new(Box::new(udp_test_results))
+    } else if is_tls {
+        let mut tls_test_results = TlsTestResults::new();
+        for i in 0..stream_count {
+            tls_test_results.prepare_index(&i);
+        }
+        Mutex::new(Box::new(tls_test_results))
     } else { //TCP
         let mut tcp_test_results = TcpTestResults::new();
         for i in 0..stream_count {
@@ -106,6 +113,10 @@ pub fn execute(args:ArgMatches) -> BoxResult<()> {
     let mut udp_port_pool = udp::receiver::UdpPortPool::new(
         args.value_of("udp_port_pool").unwrap().to_string(),
         args.value_of("udp6_port_pool").unwrap().to_string(),
+    );
+    let mut tls_port_pool = tls::receiver::TlsPortPool::new(
+        args.value_of("tls_port_pool").unwrap().to_string(),
+        args.value_of("tls6_port_pool").unwrap().to_string(),
     );
     
     let cpu_affinity_manager = Arc::new(Mutex::new(crate::utils::cpu_affinity::CpuAffinityManager::new(args.value_of("affinity").unwrap())?));
@@ -133,6 +144,7 @@ pub fn execute(args:ArgMatches) -> BoxResult<()> {
     }
     
     let is_udp = args.is_present("udp");
+    let is_tls = args.is_present("tls");
     
     let test_id = uuid::Uuid::new_v4();
     let mut upload_config = prepare_upload_configuration(&args, test_id.as_bytes())?;
@@ -150,7 +162,7 @@ pub fn execute(args:ArgMatches) -> BoxResult<()> {
     let mut parallel_streams_joinhandles = Vec::with_capacity(stream_count);
     let (results_tx, results_rx):(std::sync::mpsc::Sender<Box<dyn IntervalResult + Sync + Send>>, std::sync::mpsc::Receiver<Box<dyn IntervalResult + Sync + Send>>) = channel();
     
-    let test_results:Mutex<Box<dyn TestResults>> = prepare_test_results(is_udp, stream_count as u8);
+    let test_results:Mutex<Box<dyn TestResults>> = prepare_test_results(is_udp, is_tls, stream_count as u8);
     
     //a closure used to pass results from stream-handlers to the test-result structure
     let mut results_handler = || -> BoxResult<()> {
@@ -215,6 +227,21 @@ pub fn execute(args:ArgMatches) -> BoxResult<()> {
                 stream_ports.push(test.get_port()?);
                 parallel_streams.push(Arc::new(Mutex::new(test)));
             }
+        } else if is_tls {
+            log::info!("preparing for reverse-TLS test with {} streams...", stream_count);
+            
+            let test_definition = tls::TlsTestDefinition::new(&download_config)?;
+            for stream_idx in 0..stream_count {
+                log::debug!("preparing TLS-receiver for stream {}...", stream_idx);
+                let test = tls::receiver::TlsReceiver::new(
+                    test_definition.clone(), &(stream_idx as u8),
+                    &mut tls_port_pool,
+                    &server_addr.ip(),
+                    &(download_config["receive_buffer"].as_i64().unwrap() as usize),
+                )?;
+                stream_ports.push(test.get_port()?);
+                parallel_streams.push(Arc::new(Mutex::new(test)));
+            } 
         } else { //TCP
             log::info!("preparing for reverse-TCP test with {} streams...", stream_count);
             
@@ -267,7 +294,23 @@ pub fn execute(args:ArgMatches) -> BoxResult<()> {
                             )?;
                             parallel_streams.push(Arc::new(Mutex::new(test)));
                         }
-                    } else { //TCP
+                    } else if is_tls {
+                        log::info!("preparing for TLS test with {} streams...", stream_count);
+                        
+                        let test_definition = tls::TlsTestDefinition::new(&upload_config)?;
+                        for (stream_idx, port) in connection_payload.get("stream_ports").unwrap().as_array().unwrap().iter().enumerate() {
+                            log::debug!("preparing TLS-sender for stream {}...", stream_idx);
+                            let test = tls::sender::TlsSender::new(
+                                test_definition.clone(), &(stream_idx as u8),
+                                &server_addr.ip(), &(port.as_i64().unwrap() as u16),
+                                &(upload_config["duration"].as_f64().unwrap() as f32),
+                                &(upload_config["send_interval"].as_f64().unwrap() as f32),
+                                &(upload_config["send_buffer"].as_i64().unwrap() as usize),
+                                &(upload_config["no_delay"].as_bool().unwrap()),
+                            )?;
+                            parallel_streams.push(Arc::new(Mutex::new(test)));
+                        }  
+                    }else { //TCP
                         log::info!("preparing for TCP test with {} streams...", stream_count);
                         
                         let test_definition = tcp::TcpTestDefinition::new(&upload_config)?;

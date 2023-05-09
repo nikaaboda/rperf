@@ -37,6 +37,7 @@ use crate::protocol::communication::{receive, send, KEEPALIVE_DURATION};
 use crate::protocol::messaging::{prepare_connect, prepare_connect_ready};
 
 use crate::stream::tcp;
+use crate::stream::tls;
 use crate::stream::udp;
 use crate::stream::TestStream;
 
@@ -55,6 +56,7 @@ fn handle_client(
     cpu_affinity_manager: Arc<Mutex<crate::utils::cpu_affinity::CpuAffinityManager>>,
     tcp_port_pool: Arc<Mutex<tcp::receiver::TcpPortPool>>,
     udp_port_pool: Arc<Mutex<udp::receiver::UdpPortPool>>,
+    tls_port_pool: Arc<Mutex<tls::receiver::TlsPortPool>>,
 ) -> BoxResult<()> {
     let mut started = false;
     let peer_addr = stream.peer_addr()?;
@@ -86,8 +88,7 @@ fn handle_client(
     //server operations are entirely driven by client-signalling, making this a (simple) state-machine
     while is_alive() {
         let payload = receive(stream, is_alive, &mut results_handler)?;
-        /**
-
+        /*
         The client is expected to send a JSON object with the following fields:
         serde_json::json!({
             "kind": "configuration",
@@ -128,11 +129,9 @@ fn handle_client(
                             //since we're receiving data, we're also responsible for letting the client know where to send it
                             let mut stream_ports = Vec::with_capacity(stream_count as usize);
 
-                            let family = payload
-                                .get("family")
-                                .unwrap_or(&serde_json::json!("tcp"))
-                                .as_str()
-                                .unwrap();
+                            let tcp_json = serde_json::json!("tcp");
+                            let family =
+                                payload.get("family").unwrap_or(&tcp_json).as_str().unwrap();
 
                             if family == "udp" {
                                 log::info!(
@@ -160,12 +159,32 @@ fn handle_client(
                                     stream_ports.push(test.get_port()?);
                                     parallel_streams.push(Arc::new(Mutex::new(test)));
                                 }
-                            } else if (family == "tls") {
+                            } else if family == "tls" {
                                 log::info!(
                                     "[{}] preparing for TLS test with {} streams...",
                                     &peer_addr,
                                     stream_count
                                 );
+
+                                let mut c_tls_port_pool = tls_port_pool.lock().unwrap();
+
+                                let test_definition = tls::TlsTestDefinition::new(&payload)?;
+                                for stream_idx in 0..stream_count {
+                                    log::debug!(
+                                        "[{}] preparing TLS-receiver for stream {}...",
+                                        &peer_addr,
+                                        stream_idx
+                                    );
+                                    let test = tls::receiver::TlsReceiver::new(
+                                        test_definition.clone(),
+                                        &(stream_idx as u8),
+                                        &mut c_tls_port_pool,
+                                        &peer_addr.ip(),
+                                        &(payload["receive_buffer"].as_i64().unwrap() as usize),
+                                    )?;
+                                    stream_ports.push(test.get_port()?);
+                                    parallel_streams.push(Arc::new(Mutex::new(test)));
+                                }
                             } else {
                                 // TCP
                                 log::info!(
@@ -207,13 +226,12 @@ fn handle_client(
                             let stream_ports =
                                 payload.get("stream_ports").unwrap().as_array().unwrap();
 
-                            if payload
-                                .get("family")
-                                .unwrap_or(&serde_json::json!("tcp"))
-                                .as_str()
-                                .unwrap()
-                                == "udp"
-                            {
+                            let tcp_json = serde_json::json!("tcp");
+
+                            let family =
+                                payload.get("family").unwrap_or(&tcp_json).as_str().unwrap();
+
+                            if family == "udp" {
                                 log::info!(
                                     "[{}] preparing for UDP test with {} streams...",
                                     &peer_addr,
@@ -246,6 +264,32 @@ fn handle_client(
                                             .unwrap()
                                             as f32),
                                         &(payload["send_buffer"].as_i64().unwrap() as usize),
+                                    )?;
+                                    parallel_streams.push(Arc::new(Mutex::new(test)));
+                                }
+                            } else if family == "tls" {
+                                log::info!(
+                                    "[{}] preparing for TLS test with {} streams...",
+                                    &peer_addr,
+                                    stream_ports.len()
+                                );
+
+                                let test_definition = tls::TlsTestDefinition::new(&payload)?;
+                                for (stream_idx, port) in stream_ports.iter().enumerate() {
+                                    log::debug!(
+                                        "[{}] preparing TLS-sender for stream {}...",
+                                        &peer_addr,
+                                        stream_idx
+                                    );
+                                    let test = tls::sender::TlsSender::new(
+                                        test_definition.clone(),
+                                        &(stream_idx as u8),
+                                        &peer_addr.ip(),
+                                        &(port.as_i64().unwrap() as u16),
+                                        &(payload["duration"].as_f64().unwrap() as f32),
+                                        &(payload["send_interval"].as_f64().unwrap() as f32),
+                                        &(payload["send_buffer"].as_i64().unwrap() as usize),
+                                        &(payload["no_delay"].as_bool().unwrap()),
                                     )?;
                                     parallel_streams.push(Arc::new(Mutex::new(test)));
                                 }
@@ -418,6 +462,10 @@ pub fn serve(args: ArgMatches) -> BoxResult<()> {
         args.value_of("udp_port_pool").unwrap().to_string(),
         args.value_of("udp6_port_pool").unwrap().to_string(),
     )));
+    let tls_port_pool = Arc::new(Mutex::new(tls::receiver::TlsPortPool::new(
+        args.value_of("tls_port_pool").unwrap().to_string(),
+        args.value_of("tls6_port_pool").unwrap().to_string(),
+    )));
 
     let cpu_affinity_manager = Arc::new(Mutex::new(
         crate::utils::cpu_affinity::CpuAffinityManager::new(args.value_of("affinity").unwrap())?,
@@ -474,6 +522,7 @@ pub fn serve(args: ArgMatches) -> BoxResult<()> {
                                 let c_cam = cpu_affinity_manager.clone();
                                 let c_tcp_port_pool = tcp_port_pool.clone();
                                 let c_udp_port_pool = udp_port_pool.clone();
+                                let c_tls_port_pool = tls_port_pool.clone();
                                 let thread_builder =
                                     thread::Builder::new().name(address.to_string().into());
                                 thread_builder.spawn(move || {
@@ -487,6 +536,7 @@ pub fn serve(args: ArgMatches) -> BoxResult<()> {
                                         c_cam,
                                         c_tcp_port_pool,
                                         c_udp_port_pool,
+                                        c_tls_port_pool,
                                     ) {
                                         Ok(_) => (),
                                         Err(e) => log::error!("error in client-handler: {}", e),

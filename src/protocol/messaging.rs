@@ -159,6 +159,7 @@ fn prepare_configuration_tls_upload(
     length: usize,
     send_interval: f32,
     send_buffer: u32,
+    no_delay: bool,
 ) -> serde_json::Value {
     serde_json::json!({
         "kind": "configuration",
@@ -175,6 +176,7 @@ fn prepare_configuration_tls_upload(
         "send_interval": validate_send_interval(send_interval),
 
         "send_buffer": send_buffer,
+        "no_delay": no_delay,
     })
 }
 
@@ -364,6 +366,8 @@ pub fn prepare_upload_configuration(
             send_buffer = length * 2;
         }
 
+        let no_delay: bool = args.is_present("no_delay");
+
         Ok(prepare_configuration_tls_upload(
             test_id,
             parallel_streams,
@@ -372,6 +376,7 @@ pub fn prepare_upload_configuration(
             length as usize,
             send_interval,
             send_buffer,
+            no_delay,
         ))
     } else {
         log::debug!("preparing TCP upload config...");
