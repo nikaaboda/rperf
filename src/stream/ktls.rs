@@ -5,6 +5,8 @@ use nix::sys::socket::{setsockopt, sockopt::SndBuf};
 use crate::protocol::results::{
     get_unix_timestamp, IntervalResult, TlsReceiveResult, TlsSendResult,
 };
+use std::os::fd::{AsRawFd, RawFd};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{parse_port_spec, INTERVAL};
 
@@ -720,5 +722,100 @@ pub mod sender {
         pub fn stop(&mut self) {
             self.active = false;
         }
+    }
+}
+
+struct SpyStream<IO>(IO);
+
+impl<IO> AsyncRead for SpyStream<IO>
+where
+    IO: AsyncRead,
+{
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let old_filled = buf.filled().len();
+        let res = unsafe {
+            let io = self.map_unchecked_mut(|s| &mut s.0);
+            io.poll_read(cx, buf)
+        };
+
+        match &res {
+            std::task::Poll::Ready(res) => match res {
+                Ok(_) => {
+                    let num_read = buf.filled().len() - old_filled;
+                    log::debug!("SpyStream read {num_read} bytes",);
+                }
+                Err(e) => {
+                    log::debug!("SpyStream read errored: {e}");
+                }
+            },
+            std::task::Poll::Pending => {
+                log::debug!("SpyStream read would've blocked")
+            }
+        }
+        res
+    }
+}
+
+impl<IO> AsyncWrite for SpyStream<IO>
+where
+    IO: AsyncWrite,
+{
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        let res = unsafe {
+            let io = self.map_unchecked_mut(|s| &mut s.0);
+            io.poll_write(cx, buf)
+        };
+
+        match &res {
+            std::task::Poll::Ready(res) => match res {
+                Ok(n) => {
+                    log::debug!("SpyStream wrote {n} bytes");
+                }
+                Err(e) => {
+                    log::debug!("SpyStream writing errored: {e}");
+                }
+            },
+            std::task::Poll::Pending => {
+                log::debug!("SpyStream writing would've blocked")
+            }
+        }
+        res
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        unsafe {
+            let io = self.map_unchecked_mut(|s| &mut s.0);
+            io.poll_flush(cx)
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        unsafe {
+            let io = self.map_unchecked_mut(|s| &mut s.0);
+            io.poll_shutdown(cx)
+        }
+    }
+}
+
+impl<IO> AsRawFd for SpyStream<IO>
+where
+    IO: AsRawFd,
+{
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.as_raw_fd()
     }
 }
