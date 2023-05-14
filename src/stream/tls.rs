@@ -20,13 +20,13 @@
 
 extern crate nix;
 
-use nix::sys::socket::{setsockopt, sockopt::RcvBuf, sockopt::SndBuf};
+use nix::sys::socket::{setsockopt, sockopt::SndBuf};
 
 use crate::protocol::results::{
     get_unix_timestamp, IntervalResult, TlsReceiveResult, TlsSendResult,
 };
 
-use super::{parse_port_spec, TestStream, INTERVAL};
+use super::{parse_port_spec, INTERVAL};
 
 use std::error::Error;
 type BoxResult<T> = Result<T, Box<dyn Error>>;
@@ -86,16 +86,14 @@ impl TlsTestDefinition {
 
 pub mod receiver {
     use std::fs::File;
-    use std::io::{Read, Write};
+    use std::io::Read;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-    use std::os::fd::AsRawFd;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
     use std::vec;
 
     use mio::net::{TcpListener, TcpStream};
     use mio::{Events, Poll, PollOpt, Ready, Token};
-    use rcgen::generate_simple_self_signed;
     use rustls::cipher_suite::TLS13_AES_128_GCM_SHA256;
     use rustls::version::TLS13;
     use rustls::{Certificate, KeyLogFile, PrivateKey, ServerConfig, ServerConnection, Stream};
@@ -248,8 +246,6 @@ pub mod receiver {
         mio_poll_token: Token,
         mio_poll: Poll,
 
-        receive_buffer: usize,
-
         tls_connection: ServerConnection,
     }
     impl TlsReceiver {
@@ -258,7 +254,6 @@ pub mod receiver {
             stream_idx: &u8,
             port_pool: &mut TlsPortPool,
             peer_ip: &IpAddr,
-            receive_buffer: &usize,
         ) -> super::BoxResult<TlsReceiver> {
             log::debug!("binding TCP listener for stream {}...", stream_idx);
             let listener: TcpListener = port_pool
@@ -274,11 +269,6 @@ pub mod receiver {
             let mio_poll_token = Token(0);
             let mio_poll = Poll::new()?;
 
-            // let cert = generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
-
-            // let cert_der = cert.serialize_der().unwrap();
-            // let private_key_der = cert.serialize_private_key_der();
-
             let mut server_cert_der = Vec::new();
             let mut server_key_der = Vec::new();
             File::open("server_cert.der")
@@ -292,16 +282,6 @@ pub mod receiver {
 
             let server_cert = Certificate(server_cert_der);
             let server_key = PrivateKey(server_key_der);
-
-            // let mut file1 =
-            //     std::fs::File::create("server_cert.der").expect("Unable to create file cert");
-            // let mut file2 =
-            //     std::fs::File::create("server_key.der").expect("Unable to create file key");
-            // file1.write_all(&cert_der).expect("Unable to write data");
-            // file2
-            //     .write_all(&private_key_der)
-            //     .expect("Unable to write data");
-            // log::info!("wrote file");
 
             let mut tls_config = ServerConfig::builder()
                 .with_cipher_suites(&[TLS13_AES_128_GCM_SHA256])
@@ -327,8 +307,6 @@ pub mod receiver {
                 stream: None,
                 mio_poll_token: mio_poll_token,
                 mio_poll: mio_poll,
-
-                receive_buffer: receive_buffer.to_owned(),
 
                 tls_connection: conn,
             })
@@ -376,71 +354,6 @@ pub mod receiver {
                                     )?;
 
                                     return Ok(stream);
-
-                                    // let mut verification_stream = stream.try_clone()?;
-                                    // let mio_token2 = Token(0);
-                                    // let poll2 = Poll::new()?;
-                                    // poll2.register(
-                                    //     &verification_stream,
-                                    //     mio_token2,
-                                    //     Ready::readable(),
-                                    //     PollOpt::edge(),
-                                    // )?;
-
-                                    // let mut buffer = [0_u8; 16];
-                                    // let mut events2 = Events::with_capacity(1);
-                                    // poll2.poll(&mut events2, Some(RECEIVE_TIMEOUT))?;
-                                    // for event2 in events2.iter() {
-                                    //     match event2.token() {
-                                    //         _ => match verification_stream.read(&mut buffer) {
-                                    //             Ok(_) => {
-                                    //                 log::info!(
-                                    //                     "Read buffer: {:?}. Should be: {:?}",
-                                    //                     buffer,
-                                    //                     self.test_definition.test_id
-                                    //                 );
-                                    //                 if buffer == self.test_definition.test_id {
-                                    //                     log::info!("validated TCP stream {} connection from {}", self.stream_idx, address);
-                                    //                     if !cfg!(windows) {
-                                    //                         //NOTE: features unsupported on Windows
-                                    //                         if self.receive_buffer != 0 {
-                                    //                             log::info!("setting receive-buffer to {}...", self.receive_buffer);
-                                    //                             super::setsockopt(
-                                    //                                 stream.as_raw_fd(),
-                                    //                                 super::RcvBuf,
-                                    //                                 &self.receive_buffer,
-                                    //                             )?;
-                                    //                         }
-                                    //                     }
-
-                                    //                     self.mio_poll.register(
-                                    //                         &stream,
-                                    //                         self.mio_poll_token,
-                                    //                         Ready::readable(),
-                                    //                         PollOpt::edge(),
-                                    //                     )?;
-
-                                    //                     return Ok(stream);
-                                    //                 }
-                                    //             }
-                                    //             Err(ref e)
-                                    //                 if e.kind()
-                                    //                     == std::io::ErrorKind::WouldBlock =>
-                                    //             {
-                                    //                 //client didn't provide anything
-                                    //                 break;
-                                    //             }
-                                    //             Err(e) => {
-                                    //                 return Err(Box::new(e));
-                                    //             }
-                                    //         },
-                                    //     }
-                                    // }
-                                    // log::warn!(
-                                    //     "could not validate TCP stream {} connection from {}",
-                                    //     self.stream_idx,
-                                    //     address
-                                    // );
                                 }
                                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                                     //nothing to do
@@ -458,9 +371,8 @@ pub mod receiver {
                 "did not receive a connection"
             )))
         }
-    }
-    impl super::TestStream for TlsReceiver {
-        fn run_interval(
+
+        pub fn run_interval(
             &mut self,
         ) -> Option<super::BoxResult<Box<dyn super::IntervalResult + Sync + Send>>> {
             let mut bytes_received: u64 = 0;
@@ -576,7 +488,7 @@ pub mod receiver {
             }
         }
 
-        fn get_port(&self) -> super::BoxResult<u16> {
+        pub fn get_port(&self) -> super::BoxResult<u16> {
             match &self.listener {
                 Some(listener) => Ok(listener.local_addr()?.port()),
                 None => match &self.stream {
@@ -588,11 +500,11 @@ pub mod receiver {
             }
         }
 
-        fn get_idx(&self) -> u8 {
+        pub fn get_idx(&self) -> u8 {
             self.stream_idx.to_owned()
         }
 
-        fn stop(&mut self) {
+        pub fn stop(&mut self) {
             self.active = false;
         }
     }
@@ -607,7 +519,6 @@ pub mod sender {
     use std::time::{Duration, Instant};
 
     use mio::net::TcpStream;
-    use rcgen::generate_simple_self_signed;
     use rustls::cipher_suite::TLS13_AES_128_GCM_SHA256;
     use rustls::version::TLS13;
     use rustls::{Certificate, ClientConfig, ClientConnection, RootCertStore, Stream};
@@ -667,8 +578,6 @@ pub mod sender {
 
             let mut root_certs = RootCertStore::empty();
             root_certs.add(&server_cert).unwrap();
-
-            
 
             let config = ClientConfig::builder()
                 .with_cipher_suites(&[TLS13_AES_128_GCM_SHA256])
@@ -752,9 +661,8 @@ pub mod sender {
 
             Ok(stream)
         }
-    }
-    impl super::TestStream for TlsSender {
-        fn run_interval(
+
+        pub fn run_interval(
             &mut self,
         ) -> Option<super::BoxResult<Box<dyn super::IntervalResult + Sync + Send>>> {
             if self.stream.is_none() {
@@ -879,20 +787,20 @@ pub mod sender {
             }
         }
 
-        fn get_port(&self) -> super::BoxResult<u16> {
-            match &self.stream {
-                Some(stream) => Ok(stream.local_addr()?.port()),
-                None => Err(Box::new(simple_error::simple_error!(
-                    "no stream currently exists"
-                ))),
-            }
-        }
+        // pub fn get_port(&self) -> super::BoxResult<u16> {
+        //     match &self.stream {
+        //         Some(stream) => Ok(stream.local_addr()?.port()),
+        //         None => Err(Box::new(simple_error::simple_error!(
+        //             "no stream currently exists"
+        //         ))),
+        //     }
+        // }
 
-        fn get_idx(&self) -> u8 {
+        pub fn get_idx(&self) -> u8 {
             self.stream_idx.to_owned()
         }
 
-        fn stop(&mut self) {
+        pub fn stop(&mut self) {
             self.active = false;
         }
     }
