@@ -5,7 +5,7 @@ use nix::sys::socket::{setsockopt, sockopt::SndBuf};
 use crate::protocol::results::{
     get_unix_timestamp, IntervalResult, TlsReceiveResult, TlsSendResult,
 };
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{RawFd, AsRawFd};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{parse_port_spec, INTERVAL};
@@ -69,20 +69,21 @@ impl KtlsTestDefinition {
 pub mod receiver {
     use std::fs::File;
     use std::io::Read;
+    use std::mem::swap;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
     use std::vec;
 
-    use mio::net::{TcpListener, TcpStream};
-    use mio::{Events, Poll, PollOpt, Ready, Token};
-    use rustls::cipher_suite::TLS13_AES_128_GCM_SHA256;
-    use rustls::version::TLS13;
-    use rustls::{Certificate, KeyLogFile, PrivateKey, ServerConfig, Stream};
+    use ktls::CorkStream;
+    use tokio::io::AsyncReadExt;
+    use tokio_rustls::rustls::cipher_suite::TLS13_AES_128_GCM_SHA256;
+    use tokio_rustls::rustls::version::TLS13;
+    use tokio_rustls::rustls::{Certificate, KeyLogFile, PrivateKey, ServerConfig};
     use tokio;
     use tokio_rustls::TlsAcceptor;
 
-    use crate::stream::tls;
+    use super::SpyStream;
 
     const POLL_TIMEOUT: Duration = Duration::from_millis(250);
     const RECEIVE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -346,91 +347,85 @@ pub mod receiver {
             )))
         }
 
-        // pub async fn run_interval(
-        //     &mut self,
-        // ) -> Option<super::BoxResult<Box<dyn super::IntervalResult + Sync + Send>>> {
-        //     let mut bytes_received: u64 = 0;
+        pub async fn run_interval(
+            &mut self,
+        ) -> Option<super::BoxResult<Box<dyn super::IntervalResult + Sync + Send>>> {
+            let mut bytes_received: u64 = 0;
 
-        //     if self.stream.is_none() {
-        //         //if still in the setup phase, receive the sender
-        //         match self.process_connection().await {
-        //             Ok(stream) => {
-        //                 self.stream = Some(stream);
-        //                 //NOTE: the connection process consumes the test-header; account for those bytes
-        //                 bytes_received += super::TEST_HEADER_SIZE as u64;
-        //             }
-        //             Err(e) => {
-        //                 return Some(Err(e));
-        //             }
-        //         }
-        //         self.listener = None; //drop it, closing the socket
-        //     }
+            if self.stream.is_none() {
+                //if still in the setup phase, receive the sender
+                match self.process_connection().await {
+                    Ok(stream) => {
+                        self.stream = Some(stream);
+                        //NOTE: the connection process consumes the test-header; account for those bytes
+                        bytes_received += super::TEST_HEADER_SIZE as u64;
+                    }
+                    Err(e) => {
+                        return Some(Err(e));
+                    }
+                }
+                self.listener = None; //drop it, closing the socket
+            }
 
-        //     let stream = self.stream.as_mut().unwrap();
+            let mut stream_clone = Default::default();
+            swap(&mut stream_clone, &mut self.stream);
 
-        //     // let stream = CorkStream::new(stream);
-        //     // let stream = self.tls_acceptor.accept(stream).await.unwrap();
-        //     // let mut stream = ktls::config_ktls_server(stream).await.unwrap();
+            let stream = SpyStream(stream_clone.unwrap());
+            let stream = CorkStream::new(stream);
+            let stream = self.tls_acceptor.accept(stream).await.unwrap();
+            let mut stream = ktls::config_ktls_server(stream).await.unwrap();
 
-        //     let mut events = Events::with_capacity(1); //only watching one socket
-        //     let mut buf = vec![0_u8; self.test_definition.length];
+            let mut buf = vec![0_u8; self.test_definition.length];
 
-        //     let start = Instant::now();
+            let start = Instant::now();
 
-        //     while self.active {
-        //         if start.elapsed() >= RECEIVE_TIMEOUT {
-        //             return Some(Err(Box::new(simple_error::simple_error!(
-        //                 "TCP reception for stream {}",
-        //                 self.stream_idx,
-        //             ))));
-        //         }
+            while self.active {
+                if start.elapsed() >= RECEIVE_TIMEOUT {
+                    return Some(Err(Box::new(simple_error::simple_error!(
+                        "TCP reception for stream {}",
+                        self.stream_idx,
+                    ))));
+                }
 
-        //         match stream.read_exact(&mut buf).await.unwrap() {
-        //             Ok(packet_size) => {
-        //                 if packet_size == 0 {
-        //                     //test's over
-        //                     self.active = false; //HACK: can't call self.stop() because it's a double-borrow due to the unwrapped stream
-        //                     break;
-        //                 }
+                match stream.read_exact(&mut buf).await.unwrap() {
+                    packet_size => {
+                        if packet_size == 0 {
+                            //test's over
+                            self.active = false; //HACK: can't call self.stop() because it's a double-borrow due to the unwrapped stream
+                            break;
+                        }
 
-        //                 bytes_received += packet_size as u64;
+                        bytes_received += packet_size as u64;
 
-        //                 let elapsed_time = start.elapsed();
-        //                 if elapsed_time >= super::INTERVAL {
-        //                     return Some(Ok(Box::new(super::TlsReceiveResult {
-        //                         timestamp: super::get_unix_timestamp(),
+                        let elapsed_time = start.elapsed();
+                        if elapsed_time >= super::INTERVAL {
+                            return Some(Ok(Box::new(super::TlsReceiveResult {
+                                timestamp: super::get_unix_timestamp(),
 
-        //                         stream_idx: self.stream_idx,
+                                stream_idx: self.stream_idx,
 
-        //                         duration: elapsed_time.as_secs_f32(),
+                                duration: elapsed_time.as_secs_f32(),
 
-        //                         bytes_received: bytes_received,
-        //                     })));
-        //                 }
-        //             }
-        //             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-        //                 //receive timeout
-        //                 break;
-        //             }
-        //             Err(e) => {
-        //                 return Some(Err(Box::new(e)));
-        //             }
-        //         }
-        //     }
-        //     if bytes_received > 0 {
-        //         Some(Ok(Box::new(super::TlsReceiveResult {
-        //             timestamp: super::get_unix_timestamp(),
+                                bytes_received: bytes_received,
+                            })));
+                        }
+                    }
+                }
+            }
+            if bytes_received > 0 {
+                Some(Ok(Box::new(super::TlsReceiveResult {
+                    timestamp: super::get_unix_timestamp(),
 
-        //             stream_idx: self.stream_idx,
+                    stream_idx: self.stream_idx,
 
-        //             duration: start.elapsed().as_secs_f32(),
+                    duration: start.elapsed().as_secs_f32(),
 
-        //             bytes_received: bytes_received,
-        //         })))
-        //     } else {
-        //         None
-        //     }
-        // }
+                    bytes_received: bytes_received,
+                })))
+            } else {
+                None
+            }
+        }
 
         pub fn get_port(&self) -> super::BoxResult<u16> {
             match &self.listener {
@@ -456,20 +451,23 @@ pub mod receiver {
 
 pub mod sender {
     use std::fs::File;
-    use std::io::{Read, Write};
+    use std::io::{Read};
+    use std::mem::swap;
     use std::net::{IpAddr, SocketAddr};
     use std::os::unix::io::AsRawFd;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use mio::net::TcpStream;
-    use rustls::cipher_suite::TLS13_AES_128_GCM_SHA256;
-    use rustls::version::TLS13;
-    use rustls::{Certificate, ClientConfig, ClientConnection, RootCertStore, Stream};
+
+    use ktls::CorkStream;
+    use tokio::io::AsyncWriteExt;
+    use tokio_rustls::rustls::cipher_suite::TLS13_AES_128_GCM_SHA256;
+    use tokio_rustls::rustls::version::TLS13;
+    use tokio_rustls::rustls::{Certificate, ClientConfig, RootCertStore};
 
     use std::thread::sleep;
 
-    use crate::stream::tls;
+    use super::SpyStream;
 
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
     const WRITE_TIMEOUT: Duration = Duration::from_millis(50);
@@ -618,14 +616,15 @@ pub mod sender {
                 }
             }
 
-            let stream = self.stream.as_mut().unwrap();
-            // let stream = CorkStream::new(stream);
-            // let stream = self
-            //     .tls_connector
-            //     .connect("localhost".try_into().unwrap(), stream)
-            //     .await
-            //     .unwrap();
-            // let stream = ktls::config_ktls_client(stream).await.unwrap();
+            // let stream = self.stream.as_mut().unwrap();
+            let mut stream_clone = Default::default();
+            swap(&mut stream_clone, &mut self.stream);
+            let stream = SpyStream(stream_clone.unwrap());
+            let stream = CorkStream::new(stream);
+            let stream = self.tls_connector.connect("localhost".try_into().unwrap(), stream).await.unwrap();
+            let mut stream = ktls::config_ktls_client(stream).await.unwrap();
+            
+            
 
             let interval_duration = Duration::from_secs_f32(self.send_interval);
             let mut interval_iteration = 0;
@@ -644,11 +643,12 @@ pub mod sender {
             while self.active && self.remaining_duration > 0.0 && bytes_to_send_remaining > 0 {
                 let packet_start = Instant::now();
 
-                match stream.try_write(&mut self.staged_buffer) {
+                match stream.write_all(&mut self.staged_buffer).await.unwrap() {
                     //it doesn't matter if the whole thing couldn't be written, since it's just garbage data
-                    Ok(packet_size) => {
+                    empty => {
+                        let packet_size = self.staged_buffer.len();
                         let bytes_written = packet_size as i64;
-                        bytes_sent += bytes_written as u64;
+                        bytes_sent += packet_size as u64;
                         bytes_to_send_remaining -= bytes_written;
                         bytes_to_send_per_interval_slice_remaining -= bytes_written;
 
@@ -668,15 +668,15 @@ pub mod sender {
                             })));
                         }
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        //send-buffer is full
-                        //nothing to do, but avoid burning CPU cycles
-                        sleep(BUFFER_FULL_TIMEOUT);
-                        sends_blocked += 1;
-                    }
-                    Err(e) => {
-                        return Some(Err(Box::new(e)));
-                    }
+                    // Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    //     //send-buffer is full
+                    //     //nothing to do, but avoid burning CPU cycles
+                    //     sleep(BUFFER_FULL_TIMEOUT);
+                    //     sends_blocked += 1;
+                    // }
+                    // Err(e) => {
+                    //     return Some(Err(Box::new(e)));
+                    // }
                 }
 
                 if bytes_to_send_remaining <= 0 {
