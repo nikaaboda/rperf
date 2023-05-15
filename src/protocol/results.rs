@@ -44,6 +44,8 @@ pub enum IntervalResultKind {
     UdpSend,
     TlsReceive,
     TlsSend,
+    KtlsReceive,
+    KtlsSend
 }
 
 pub fn get_unix_timestamp() -> f64 {
@@ -523,6 +525,69 @@ impl IntervalResult for TlsReceiveResult {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct KtlsReceiveResult {
+    pub timestamp: f64,
+    
+    pub stream_idx: u8,
+    
+    pub duration: f32,
+    
+    pub bytes_received: u64,
+}
+impl KtlsReceiveResult {
+    fn from_json(value:serde_json::Value) -> BoxResult<KtlsReceiveResult> {
+        let receive_result:KtlsReceiveResult = serde_json::from_value(value)?;
+        Ok(receive_result)
+    }
+    
+    fn to_result_json(&self) -> serde_json::Value {
+        let mut serialised = serde_json::to_value(self).unwrap();
+        serialised.as_object_mut().unwrap().remove("stream_idx");
+        serialised
+    }
+}
+impl IntervalResult for KtlsReceiveResult {
+    fn kind(&self) -> IntervalResultKind{
+        IntervalResultKind::KtlsReceive
+    }
+    
+    fn get_stream_idx(&self) -> u8 {
+        self.stream_idx
+    }
+    
+    fn to_json(&self) -> serde_json::Value {
+        let mut serialised = serde_json::to_value(self).unwrap();
+        serialised["family"] = serde_json::json!("ktls");
+        serialised["kind"] = serde_json::json!("receive");
+        serialised
+    }
+    
+    fn to_string(&self, bit:bool) -> String {
+        let duration_divisor;
+        if self.duration == 0.0 { //avoid zerodiv, which can happen if the stream fails
+            duration_divisor = 1.0;
+        } else {
+            duration_divisor = self.duration;
+        }
+        
+        let bytes_per_second = self.bytes_received as f32 / duration_divisor;
+        
+        let throughput = match bit {
+            true => format!("megabits/second: {:.3}", bytes_per_second / (1_000_000.00 / 8.0)),
+            false => format!("megabytes/second: {:.3}", bytes_per_second / 1_000_000.00),
+        };
+        
+        format!("----------\n\
+                 TLS receive result over {:.2}s | stream: {}\n\
+                 bytes: {} | per second: {:.3} | {}",
+                self.duration, self.stream_idx,
+                self.bytes_received, bytes_per_second, throughput,
+        )
+    }
+}
+
+
+#[derive(Serialize, Deserialize)]
 pub struct TlsSendResult {
     pub timestamp: f64,
     
@@ -553,6 +618,78 @@ impl TlsSendResult {
 impl IntervalResult for TlsSendResult {
     fn kind(&self) -> IntervalResultKind{
         IntervalResultKind::TlsSend
+    }
+    
+    fn get_stream_idx(&self) -> u8 {
+        self.stream_idx
+    }
+    
+    fn to_json(&self) -> serde_json::Value {
+        let mut serialised = serde_json::to_value(self).unwrap();
+        serialised["family"] = serde_json::json!("tls");
+        serialised["kind"] = serde_json::json!("send");
+        serialised
+    }
+    
+    fn to_string(&self, bit:bool) -> String {
+        let duration_divisor;
+        if self.duration == 0.0 { //avoid zerodiv, which can happen if the stream fails
+            duration_divisor = 1.0;
+        } else {
+            duration_divisor = self.duration;
+        }
+        
+        let bytes_per_second = self.bytes_sent as f32 / duration_divisor;
+        
+        let throughput = match bit {
+            true => format!("megabits/second: {:.3}", bytes_per_second / (1_000_000.00 / 8.0)),
+            false => format!("megabytes/second: {:.3}", bytes_per_second / 1_000_000.00),
+        };
+        
+        let mut output = format!("----------\n\
+                 TLS send result over {:.2}s | stream: {}\n\
+                 bytes: {} | per second: {:.3} | {}",
+                self.duration, self.stream_idx,
+                self.bytes_sent, bytes_per_second, throughput,
+        );
+        if self.sends_blocked > 0 {
+            output.push_str(&format!("\nstalls due to full send-buffer: {}", self.sends_blocked));
+        }
+        output
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct KtlsSendResult {
+    pub timestamp: f64,
+    
+    pub stream_idx: u8,
+    
+    pub duration: f32,
+    
+    pub bytes_sent: u64,
+    pub sends_blocked: u64,
+}
+impl KtlsSendResult {
+    fn from_json(value:serde_json::Value) -> BoxResult<KtlsSendResult> {
+        let mut local_value = value.clone();
+        if local_value.get("sends_blocked").is_none() { //pre-0.1.8 peer
+            local_value["sends_blocked"] = serde_json::json!(0 as u64); //report pre-0.1.8 status
+        }
+        
+        let send_result:KtlsSendResult = serde_json::from_value(local_value)?;
+        Ok(send_result)
+    }
+    
+    fn to_result_json(&self) -> serde_json::Value {
+        let mut serialised = serde_json::to_value(self).unwrap();
+        serialised.as_object_mut().unwrap().remove("stream_idx");
+        serialised
+    }
+}
+impl IntervalResult for KtlsSendResult {
+    fn kind(&self) -> IntervalResultKind{
+        IntervalResultKind::KtlsSend
     }
     
     fn get_stream_idx(&self) -> u8 {
@@ -626,6 +763,17 @@ pub fn interval_result_from_json(value:serde_json::Value) -> BoxResult<Box<dyn I
                         Some(kind) => match kind {
                             "receive" => Ok(Box::new(TlsReceiveResult::from_json(value)?)),
                             "send" => Ok(Box::new(TlsSendResult::from_json(value)?)),
+                            _ => Err(Box::new(simple_error::simple_error!("unsupported interval-result kind: {}", kind))),
+                        },
+                        None => Err(Box::new(simple_error::simple_error!("interval-result's kind is not a string"))),
+                    },
+                    None => Err(Box::new(simple_error::simple_error!("interval-result has no kind"))),
+                },
+                "ktls" => match value.get("kind") {
+                    Some(k) => match k.as_str() {
+                        Some(kind) => match kind {
+                            "receive" => Ok(Box::new(KtlsReceiveResult::from_json(value)?)),
+                            "send" => Ok(Box::new(KtlsSendResult::from_json(value)?)),
                             _ => Err(Box::new(simple_error::simple_error!("unsupported interval-result kind: {}", kind))),
                         },
                         None => Err(Box::new(simple_error::simple_error!("interval-result's kind is not a string"))),
@@ -865,6 +1013,67 @@ impl StreamResults for TlsStreamResults {
         })
     }
 }
+
+struct KtlsStreamResults {
+    receive_results: Vec<KtlsReceiveResult>,
+    send_results: Vec<KtlsSendResult>,
+}
+impl StreamResults for KtlsStreamResults {
+    fn update_from_json(&mut self, value:serde_json::Value) -> BoxResult<()> {
+        match value.get("kind") {
+            Some(k) => match k.as_str() {
+                Some(kind) => match kind {
+                    "send" => Ok(self.send_results.push(KtlsSendResult::from_json(value)?)),
+                    "receive" => Ok(self.receive_results.push(KtlsReceiveResult::from_json(value)?)),
+                    _ => Err(Box::new(simple_error::simple_error!("unsupported kind for TCP stream-result: {}", kind))),
+                },
+                None => Err(Box::new(simple_error::simple_error!("kind must be a string for TCP stream-result"))),
+            },
+            None => Err(Box::new(simple_error::simple_error!("no kind specified for TCP stream-result"))),
+        }
+    }
+    
+    fn to_json(&self, omit_seconds:usize) -> serde_json::Value {
+        let mut duration_send:f64 = 0.0;
+        let mut bytes_sent:u64 = 0;
+        
+        let mut duration_receive:f64 = 0.0;
+        let mut bytes_received:u64 = 0;
+        
+        for (i, sr) in self.send_results.iter().enumerate() {
+            if i < omit_seconds {
+                continue;
+            }
+            
+            duration_send += sr.duration as f64;
+            bytes_sent += sr.bytes_sent;
+        }
+        
+        for (i, rr) in self.receive_results.iter().enumerate() {
+            if i < omit_seconds {
+                continue;
+            }
+            
+            duration_receive += rr.duration as f64;
+            bytes_received += rr.bytes_received;
+        }
+        
+        let summary = serde_json::json!({
+            "duration_send": duration_send,
+            "bytes_sent": bytes_sent,
+            
+            "duration_receive": duration_receive,
+            "bytes_received": bytes_received,
+        });
+        
+        serde_json::json!({
+            "receive": self.receive_results.iter().map(|rr| rr.to_result_json()).collect::<Vec<serde_json::Value>>(),
+            "send": self.send_results.iter().map(|sr| sr.to_result_json()).collect::<Vec<serde_json::Value>>(),
+            "summary": summary,
+        })
+    }
+}
+
 
 pub trait TestResults {
     fn count_in_progress_streams(&self) -> u8;
@@ -1491,6 +1700,235 @@ impl TestResults for TlsTestResults {
                 None => Err(Box::new(simple_error::simple_error!("kind must be a string for TLS stream-result"))),
             },
             None => Err(Box::new(simple_error::simple_error!("no kind specified for TLS stream-result"))),
+        }
+    }
+    
+    fn to_json(&self, omit_seconds:usize, upload_config:serde_json::Value, download_config:serde_json::Value, common_config:serde_json::Value, additional_config:serde_json::Value) -> serde_json::Value {
+        let mut duration_send:f64 = 0.0;
+        let mut bytes_sent:u64 = 0;
+        
+        let mut duration_receive:f64 = 0.0;
+        let mut bytes_received:u64 = 0;
+        
+        
+        let mut streams = Vec::with_capacity(self.stream_results.len());
+        for (idx, stream) in self.stream_results.iter() {
+            streams.push(serde_json::json!({
+                "intervals": stream.to_json(omit_seconds),
+                "abandoned": self.pending_tests.contains(idx),
+                "failed": self.failed_tests.contains(idx),
+            }));
+            
+            for (i, sr) in stream.send_results.iter().enumerate() {
+                if i < omit_seconds {
+                    continue;
+                }
+                
+                duration_send += sr.duration as f64;
+                bytes_sent += sr.bytes_sent;
+            }
+            
+            for (i, rr) in stream.receive_results.iter().enumerate() {
+                if i < omit_seconds {
+                    continue;
+                }
+                
+                duration_receive += rr.duration as f64;
+                bytes_received += rr.bytes_received;
+            }
+        }
+        
+        let summary = serde_json::json!({
+            "duration_send": duration_send,
+            "bytes_sent": bytes_sent,
+            
+            "duration_receive": duration_receive,
+            "bytes_received": bytes_received,
+        });
+        
+        serde_json::json!({
+            "config": {
+                "upload": upload_config,
+                "download": download_config,
+                "common": common_config,
+                "additional": additional_config,
+            },
+            "streams": streams,
+            "summary": summary,
+            "success": self.is_success(),
+        })
+    }
+    
+    fn to_string(&self, bit:bool, omit_seconds:usize) -> String {
+        let stream_count = self.stream_results.len();
+        let mut stream_send_durations = vec![0.0; stream_count];
+        let mut stream_receive_durations = vec![0.0; stream_count];
+        
+        let mut duration_send:f64 = 0.0;
+        let mut bytes_sent:u64 = 0;
+        
+        let mut duration_receive:f64 = 0.0;
+        let mut bytes_received:u64 = 0;
+        
+        let mut sends_blocked = false;
+        
+        for (stream_idx, stream) in self.stream_results.values().enumerate() {
+            for (i, sr) in stream.send_results.iter().enumerate() {
+                if i < omit_seconds {
+                    continue;
+                }
+                
+                duration_send += sr.duration as f64;
+                stream_send_durations[stream_idx] += sr.duration as f64;
+                
+                bytes_sent += sr.bytes_sent;
+                
+                sends_blocked |= sr.sends_blocked > 0;
+            }
+            
+            for (i, rr) in stream.receive_results.iter().enumerate() {
+                if i < omit_seconds {
+                    continue;
+                }
+                
+                duration_receive += rr.duration as f64;
+                stream_receive_durations[stream_idx] += rr.duration as f64;
+                
+                bytes_received += rr.bytes_received;
+            }
+        }
+        stream_send_durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        stream_receive_durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        
+        let send_duration_divisor;
+        if duration_send == 0.0 { //avoid zerodiv, which can happen if all streams fail
+            send_duration_divisor = 1.0;
+        } else {
+            send_duration_divisor = duration_send;
+        }
+        let send_bytes_per_second = bytes_sent as f64 / send_duration_divisor;
+        let send_throughput = match bit {
+            true => format!("megabits/second: {:.3}", send_bytes_per_second / (1_000_000.00 / 8.0)),
+            false => format!("megabytes/second: {:.3}", send_bytes_per_second / 1_000_000.00),
+        };
+        let total_send_throughput = match bit {
+            true => format!("megabits/second: {:.3}", (send_bytes_per_second / (1_000_000.00 / 8.0)) * stream_count as f64),
+            false => format!("megabytes/second: {:.3}", (send_bytes_per_second / 1_000_000.00) * stream_count as f64),
+        };
+        
+        let receive_duration_divisor;
+        if duration_receive == 0.0 { //avoid zerodiv, which can happen if all streams fail
+            receive_duration_divisor = 1.0;
+        } else {
+            receive_duration_divisor = duration_receive;
+        }
+        let receive_bytes_per_second = bytes_received as f64 / receive_duration_divisor;
+        let receive_throughput = match bit {
+            true => format!("megabits/second: {:.3}", receive_bytes_per_second / (1_000_000.00 / 8.0)),
+            false => format!("megabytes/second: {:.3}", receive_bytes_per_second / 1_000_000.00),
+        };
+        let total_receive_throughput = match bit {
+            true => format!("megabits/second: {:.3}", (receive_bytes_per_second / (1_000_000.00 / 8.0)) * stream_count as f64),
+            false => format!("megabytes/second: {:.3}", (receive_bytes_per_second / 1_000_000.00) * stream_count as f64),
+        };
+        
+        let mut output = format!("==========\n\
+                                  TLS send result over {:.2}s | streams: {}\n\
+                                  stream-average bytes per second: {:.3} | {}\n\
+                                  total bytes: {} | per second: {:.3} | {}\n\
+                                  ==========\n\
+                                  TLS receive result over {:.2}s | streams: {}\n\
+                                  stream-average bytes per second: {:.3} | {}\n\
+                                  total bytes: {} | per second: {:.3} | {}",
+                                stream_send_durations[stream_send_durations.len() - 1], stream_count,
+                                send_bytes_per_second, send_throughput,
+                                bytes_sent, send_bytes_per_second * stream_count as f64, total_send_throughput,
+                                
+                                stream_receive_durations[stream_receive_durations.len() - 1], stream_count,
+                                receive_bytes_per_second, receive_throughput,
+                                bytes_received, receive_bytes_per_second * stream_count as f64, total_receive_throughput,
+        );
+        if sends_blocked {
+            output.push_str(&format!("\nthroughput throttled by buffer limitations"));
+        }
+        if !self.is_success() {
+            output.push_str(&format!("\nTESTING DID NOT COMPLETE SUCCESSFULLY"));
+        }
+        
+        output
+    }
+}
+
+pub struct KtlsTestResults {
+    stream_results: HashMap<u8, KtlsStreamResults>,
+    pending_tests: HashSet<u8>,
+    failed_tests: HashSet<u8>,
+    server_tests_finished: HashSet<u8>,
+}
+impl KtlsTestResults {
+    pub fn new() -> KtlsTestResults {
+        KtlsTestResults{
+            stream_results: HashMap::new(),
+            pending_tests: HashSet::new(),
+            failed_tests: HashSet::new(),
+            server_tests_finished: HashSet::new(),
+        }
+    }
+    pub fn prepare_index(&mut self, idx:&u8) {
+        self.stream_results.insert(*idx, KtlsStreamResults{
+            receive_results: Vec::new(),
+            send_results: Vec::new(),
+        });
+        self.pending_tests.insert(*idx);
+    }
+}
+impl TestResults for KtlsTestResults {
+    fn count_in_progress_streams(&self) -> u8 {
+        self.pending_tests.len() as u8
+    }
+    fn mark_stream_done(&mut self, idx:&u8, success:bool) {
+        self.pending_tests.remove(idx);
+        if !success {
+            self.failed_tests.insert(*idx);
+        }
+    }
+    
+    fn count_in_progress_streams_server(&self) -> u8 {
+        let mut count:u8 = 0;
+        for idx in self.stream_results.keys() {
+            if !self.server_tests_finished.contains(idx) {
+                count += 1;
+            }
+        }
+        count
+    }
+    fn mark_stream_done_server(&mut self, idx:&u8) {
+        self.server_tests_finished.insert(*idx);
+    }
+    
+    fn is_success(&self) -> bool {
+        self.pending_tests.len() == 0 && self.failed_tests.len() == 0
+    }
+    
+    fn update_from_json(&mut self, value:serde_json::Value) -> BoxResult<()> {
+        match value.get("family") {
+            Some(f) => match f.as_str() {
+                Some(family) => match family {
+                    "ktls" => match value.get("stream_idx") {
+                        Some(idx) => match idx.as_i64() {
+                            Some(idx64) => match self.stream_results.get_mut(&(idx64 as u8)) {
+                                Some(stream_results) => stream_results.update_from_json(value),
+                                None => Err(Box::new(simple_error::simple_error!("stream-index {} is not a valid identifier", idx64))),
+                            },
+                            None => Err(Box::new(simple_error::simple_error!("stream-index is not an integer"))),
+                        },
+                        None => Err(Box::new(simple_error::simple_error!("no stream-index specified"))),
+                    },
+                    _ => Err(Box::new(simple_error::simple_error!("unsupported family for KTLS stream-result: {}", family))),
+                },
+                None => Err(Box::new(simple_error::simple_error!("kind must be a string for KTLS stream-result"))),
+            },
+            None => Err(Box::new(simple_error::simple_error!("no kind specified for KTLS stream-result"))),
         }
     }
     

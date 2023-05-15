@@ -196,7 +196,54 @@ fn prepare_configuration_tls_download(
         "streams": validate_streams(streams),
 
         "length": calculate_length_tls(length),
-        "receive_buffer": receive_buffer,
+    })
+}
+
+fn prepare_configuration_ktls_upload(
+    test_id: &[u8; 16],
+    streams: u8,
+    bandwidth: u64,
+    seconds: f32,
+    length: usize,
+    send_interval: f32,
+    send_buffer: u32,
+    no_delay: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "configuration",
+
+        "family": "ktls",
+        "role": "upload",
+
+        "test_id": test_id,
+        "streams": validate_streams(streams),
+
+        "bandwidth": validate_bandwidth(bandwidth),
+        "duration": seconds,
+        "length": calculate_length_ktls(length),
+        "send_interval": validate_send_interval(send_interval),
+
+        "send_buffer": send_buffer,
+        "no_delay": no_delay,
+    })
+}
+
+fn prepare_configuration_ktls_download(
+    test_id: &[u8; 16],
+    streams: u8,
+    length: usize,
+    receive_buffer: u32,
+) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "configuration",
+
+        "family": "ktls",
+        "role": "download",
+
+        "test_id": test_id,
+        "streams": validate_streams(streams),
+
+        "length": calculate_length_ktls(length),
     })
 }
 
@@ -247,6 +294,14 @@ fn calculate_length_tls(length: usize) -> usize {
     if length < crate::stream::tls::TEST_HEADER_SIZE {
         //length must be at least enough to hold the test data
         crate::stream::tls::TEST_HEADER_SIZE
+    } else {
+        length
+    }
+}
+fn calculate_length_ktls(length: usize) -> usize {
+    if length < crate::stream::ktls::TEST_HEADER_SIZE {
+        //length must be at least enough to hold the test data
+        crate::stream::ktls::TEST_HEADER_SIZE
     } else {
         length
     }
@@ -378,6 +433,28 @@ pub fn prepare_upload_configuration(
             send_buffer,
             no_delay,
         ))
+    } else if args.is_present("ktls") {
+        log::debug!("preparing KTLS upload config...");
+        if length == 0 {
+            length = 32 * 1024;
+        }
+        if send_buffer != 0 && send_buffer < length {
+            log::warn!("requested send-buffer, {}, is too small to hold the data to be exchanged; it will be increased to {}", send_buffer, length * 2);
+            send_buffer = length * 2;
+        }
+
+        let no_delay: bool = args.is_present("no_delay");
+
+        Ok(prepare_configuration_ktls_upload(
+            test_id,
+            parallel_streams,
+            bandwidth,
+            seconds,
+            length as usize,
+            send_interval,
+            send_buffer,
+            no_delay,
+        ))
     } else {
         log::debug!("preparing TCP upload config...");
         if length == 0 {
@@ -431,10 +508,25 @@ pub fn prepare_download_configuration(
         if length == 0 {
             length = 32 * 1024;
         }
-        if receive_buffer != 0 && receive_buffer < length {
-            log::warn!("requested receive-buffer, {}, is too small to hold the data to be exchanged; it will be increased to {}", receive_buffer, length * 2);
-            receive_buffer = length * 2;
+        // if receive_buffer != 0 && receive_buffer < length {
+        //     log::warn!("requested receive-buffer, {}, is too small to hold the data to be exchanged; it will be increased to {}", receive_buffer, length * 2);
+        //     receive_buffer = length * 2;
+        // }
+        Ok(prepare_configuration_tls_download(
+            test_id,
+            parallel_streams,
+            length as usize,
+            receive_buffer,
+        ))
+    } else if args.is_present("ktls") {
+        log::debug!("preparing KTLS download config...");
+        if length == 0 {
+            length = 32 * 1024;
         }
+        // if receive_buffer != 0 && receive_buffer < length {
+        //     log::warn!("requested receive-buffer, {}, is too small to hold the data to be exchanged; it will be increased to {}", receive_buffer, length * 2);
+        //     receive_buffer = length * 2;
+        // }
         Ok(prepare_configuration_tls_download(
             test_id,
             parallel_streams,
