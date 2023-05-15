@@ -698,7 +698,7 @@ impl IntervalResult for KtlsSendResult {
     
     fn to_json(&self) -> serde_json::Value {
         let mut serialised = serde_json::to_value(self).unwrap();
-        serialised["family"] = serde_json::json!("tls");
+        serialised["family"] = serde_json::json!("ktls");
         serialised["kind"] = serde_json::json!("send");
         serialised
     }

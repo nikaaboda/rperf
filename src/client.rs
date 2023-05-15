@@ -910,7 +910,9 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
                     //     poisoned.into_inner()
                     // },
                 };
+                log::info!("should have stopped");
                 // stream.stop();
+                break;
             }
         }
         ParallelStreams::TcpReceive(streams) => {
@@ -958,6 +960,7 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
                     //     poisoned.into_inner()
                     // },
                 };
+                log::info!("should have stopped");
                 // stream.stop();
             }
         }

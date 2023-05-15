@@ -196,6 +196,7 @@ fn prepare_configuration_tls_download(
         "streams": validate_streams(streams),
 
         "length": calculate_length_tls(length),
+        "receive_buffer": receive_buffer,
     })
 }
 
@@ -244,6 +245,7 @@ fn prepare_configuration_ktls_download(
         "streams": validate_streams(streams),
 
         "length": calculate_length_ktls(length),
+        "receive_buffer": receive_buffer,
     })
 }
 
@@ -508,10 +510,10 @@ pub fn prepare_download_configuration(
         if length == 0 {
             length = 32 * 1024;
         }
-        // if receive_buffer != 0 && receive_buffer < length {
-        //     log::warn!("requested receive-buffer, {}, is too small to hold the data to be exchanged; it will be increased to {}", receive_buffer, length * 2);
-        //     receive_buffer = length * 2;
-        // }
+        if receive_buffer != 0 && receive_buffer < length {
+            log::warn!("requested receive-buffer, {}, is too small to hold the data to be exchanged; it will be increased to {}", receive_buffer, length * 2);
+            receive_buffer = length * 2;
+        }
         Ok(prepare_configuration_tls_download(
             test_id,
             parallel_streams,
@@ -523,10 +525,10 @@ pub fn prepare_download_configuration(
         if length == 0 {
             length = 32 * 1024;
         }
-        // if receive_buffer != 0 && receive_buffer < length {
-        //     log::warn!("requested receive-buffer, {}, is too small to hold the data to be exchanged; it will be increased to {}", receive_buffer, length * 2);
-        //     receive_buffer = length * 2;
-        // }
+        if receive_buffer != 0 && receive_buffer < length {
+            log::warn!("requested receive-buffer, {}, is too small to hold the data to be exchanged; it will be increased to {}", receive_buffer, length * 2);
+            receive_buffer = length * 2;
+        }
         Ok(prepare_configuration_tls_download(
             test_id,
             parallel_streams,

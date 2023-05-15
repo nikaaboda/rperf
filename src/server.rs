@@ -167,7 +167,7 @@ async fn handle_client(
                             let family =
                                 payload.get("family").unwrap_or(&tcp_json).as_str().unwrap();
 
-                                log::info!("family: {}", family);
+                            log::info!("family: {}", family);
 
                             if family == "udp" {
                                 log::info!(
@@ -969,98 +969,118 @@ async fn handle_client(
 
     log::debug!("[{}] stopping any still-in-progress streams", &peer_addr);
 
-    // match &mut parallel_streams.unwrap() {
-    //     ParallelStreams::TcpReceive(streams) => {
-    //         for ps in parallel_streams_tcp_receive.iter_mut() {
-    //             let mut stream = match (*ps).lock() {
-    //                 Ok(guard) => guard,
-    //                 Err(poisoned) => {
-    //                     log::error!(
-    //                         "[{}] a stream-handler was poisoned; this indicates some sort of logic error",
-    //                         &peer_addr
-    //                     );
-    //                     poisoned.into_inner()
-    //                 }
-    //             };
-    //             stream.stop();
-    //         }
-    //     }
-    //     ParallelStreams::UdpReceive(streams) => {
-    //         for ps in parallel_streams_udp_receive.iter_mut() {
-    //             let mut stream = match (*ps).lock() {
-    //                 Ok(guard) => guard,
-    //                 Err(poisoned) => {
-    //                     log::error!(
-    //                         "[{}] a stream-handler was poisoned; this indicates some sort of logic error",
-    //                         &peer_addr
-    //                     );
-    //                     poisoned.into_inner()
-    //                 }
-    //             };
-    //             stream.stop();
-    //         }
-    //     }
-    //     ParallelStreams::TlsReceive(streams) => {
-    //         for ps in parallel_streams_tls_receive.iter_mut() {
-    //             let mut stream = match (*ps).lock() {
-    //                 Ok(guard) => guard,
-    //                 Err(poisoned) => {
-    //                     log::error!(
-    //                         "[{}] a stream-handler was poisoned; this indicates some sort of logic error",
-    //                         &peer_addr
-    //                     );
-    //                     poisoned.into_inner()
-    //                 }
-    //             };
-    //             stream.stop();
-    //         }
-    //     }
-    //     ParallelStreams::TcpSend(streams) => {
-    //         for ps in parallel_streams_tcp_send.iter_mut() {
-    //             let mut stream = match (*ps).lock() {
-    //                 Ok(guard) => guard,
-    //                 Err(poisoned) => {
-    //                     log::error!(
-    //                         "[{}] a stream-handler was poisoned; this indicates some sort of logic error",
-    //                         &peer_addr
-    //                     );
-    //                     poisoned.into_inner()
-    //                 }
-    //             };
-    //             stream.stop();
-    //         }
-    //     }
-    //     ParallelStreams::UdpSend(streams) => {
-    //         for ps in parallel_streams_udp_send.iter_mut() {
-    //             let mut stream = match (*ps).lock() {
-    //                 Ok(guard) => guard,
-    //                 Err(poisoned) => {
-    //                     log::error!(
-    //                         "[{}] a stream-handler was poisoned; this indicates some sort of logic error",
-    //                         &peer_addr
-    //                     );
-    //                     poisoned.into_inner()
-    //                 }
-    //             };
-    //             stream.stop();
-    //         }
-    //     }
-    //     ParallelStreams::TlsSend(streams) => {
-    //         for ps in parallel_streams_tls_send.iter_mut() {
-    //             let mut stream = match (*ps).lock() {
-    //                 Ok(guard) => guard,
-    //                 Err(poisoned) => {
-    //                     log::error!(
-    //                         "[{}] a stream-handler was poisoned; this indicates some sort of logic error",
-    //                         &peer_addr
-    //                     );
-    //                     poisoned.into_inner()
-    //                 }
-    //             };
-    //             stream.stop();
-    //         }
-    //     }
-    // }
+    for ps in parallel_streams_tcp_receive.iter_mut() {
+        let mut stream = match (*ps).lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                log::error!(
+                    "[{}] a stream-handler was poisoned; this indicates some sort of logic error",
+                    &peer_addr
+                );
+                poisoned.into_inner()
+            }
+        };
+        stream.stop();
+    }
+
+    for ps in parallel_streams_udp_receive.iter_mut() {
+        let mut stream = match (*ps).lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                log::error!(
+                    "[{}] a stream-handler was poisoned; this indicates some sort of logic error",
+                    &peer_addr
+                );
+                poisoned.into_inner()
+            }
+        };
+        stream.stop();
+    }
+
+    for ps in parallel_streams_tls_receive.iter_mut() {
+        let mut stream = match (*ps).lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                log::error!(
+                    "[{}] a stream-handler was poisoned; this indicates some sort of logic error",
+                    &peer_addr
+                );
+                poisoned.into_inner()
+            }
+        };
+        stream.stop();
+    }
+
+    for ps in parallel_streams_ktls_receive.iter_mut() {
+        let mut stream = match (*ps).lock().await {
+            guard => guard,
+            // poisoned => {
+            //     log::error!(
+            //         "[{}] a stream-handler was poisoned; this indicates some sort of logic error",
+            //         &peer_addr
+            //     );
+            //     poisoned.into_inner()
+            // }
+        };
+        stream.stop();
+    }
+
+    for ps in parallel_streams_tcp_send.iter_mut() {
+        let mut stream = match (*ps).lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                log::error!(
+                    "[{}] a stream-handler was poisoned; this indicates some sort of logic error",
+                    &peer_addr
+                );
+                poisoned.into_inner()
+            }
+        };
+        stream.stop();
+    }
+
+    for ps in parallel_streams_udp_send.iter_mut() {
+        let mut stream = match (*ps).lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                log::error!(
+                    "[{}] a stream-handler was poisoned; this indicates some sort of logic error",
+                    &peer_addr
+                );
+                poisoned.into_inner()
+            }
+        };
+        stream.stop();
+    }
+
+    for ps in parallel_streams_tls_send.iter_mut() {
+        let mut stream = match (*ps).lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                log::error!(
+                    "[{}] a stream-handler was poisoned; this indicates some sort of logic error",
+                    &peer_addr
+                );
+                poisoned.into_inner()
+            }
+        };
+        stream.stop();
+    }
+
+    for ps in parallel_streams_ktls_send.iter_mut() {
+        let mut stream = match (*ps).lock().await {
+            guard => guard,
+            // poisoned => {
+            //     log::error!(
+            //         "[{}] a stream-handler was poisoned; this indicates some sort of logic error",
+            //         &peer_addr
+            //     );
+            //     poisoned.into_inner()
+            // }
+        };
+        stream.stop();
+    }
+
     log::debug!("[{}] waiting for all streams to end", &peer_addr);
     for jh in parallel_streams_joinhandles {
         match jh.join() {
