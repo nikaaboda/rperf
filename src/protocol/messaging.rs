@@ -529,7 +529,7 @@ pub fn prepare_download_configuration(
             log::warn!("requested receive-buffer, {}, is too small to hold the data to be exchanged; it will be increased to {}", receive_buffer, length * 2);
             receive_buffer = length * 2;
         }
-        Ok(prepare_configuration_tls_download(
+        Ok(prepare_configuration_ktls_download(
             test_id,
             parallel_streams,
             length as usize,
