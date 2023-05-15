@@ -64,8 +64,6 @@ async fn main() {
                 .short("d")
                 .required(false)
         )
-        
-        
         .arg(
             Arg::with_name("server")
                 .help("run in server mode")
@@ -138,7 +136,7 @@ async fn main() {
                 .help("use KTLS rather than TCP")
                 .takes_value(false)
                 .long("ktls")
-                .short("KT")
+                .short("K")
                 .required(false)
         )
         .arg(
@@ -262,6 +260,21 @@ async fn main() {
                 .help("an optional pool of IPv6 TLS ports over which data will be accepted; if omitted, any OS-assignable port is used; format: 1-10,19,21")
                 .takes_value(true)
                 .long("tls6-port-pool")
+                .required(false)
+                .default_value("")
+        ).arg(
+            Arg::with_name("ktls_port_pool")
+                .help("an optional pool of IPv4 KTLS ports over which data will be accepted; if omitted, any OS-assignable port is used; format: 1-10,19,21")
+                .takes_value(true)
+                .long("ktls-port-pool")
+                .required(false)
+                .default_value("")
+        )
+        .arg(
+            Arg::with_name("ktls6_port_pool")
+                .help("an optional pool of IPv6 KTLS ports over which data will be accepted; if omitted, any OS-assignable port is used; format: 1-10,19,21")
+                .takes_value(true)
+                .long("ktls6-port-pool")
                 .required(false)
                 .default_value("")
         )

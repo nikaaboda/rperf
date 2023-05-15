@@ -167,6 +167,8 @@ async fn handle_client(
                             let family =
                                 payload.get("family").unwrap_or(&tcp_json).as_str().unwrap();
 
+                                log::info!("family: {}", family);
+
                             if family == "udp" {
                                 log::info!(
                                     "[{}] preparing for UDP test with {} streams...",
@@ -432,6 +434,8 @@ async fn handle_client(
                                 parallel_streams = Some(ParallelStreams::UdpReceive(Vec::new()));
                             } else if family == "tls" {
                                 parallel_streams = Some(ParallelStreams::TlsReceive(Vec::new()));
+                            } else if family == "ktls" {
+                                parallel_streams = Some(ParallelStreams::KtlsReceive(Vec::new()));
                             } else {
                                 parallel_streams = Some(ParallelStreams::TcpReceive(Vec::new()));
                             }
@@ -440,6 +444,8 @@ async fn handle_client(
                                 parallel_streams = Some(ParallelStreams::UdpSend(Vec::new()));
                             } else if family == "tls" {
                                 parallel_streams = Some(ParallelStreams::TlsSend(Vec::new()));
+                            } else if family == "ktls" {
+                                parallel_streams = Some(ParallelStreams::KtlsSend(Vec::new()));
                             } else {
                                 parallel_streams = Some(ParallelStreams::TcpSend(Vec::new()));
                             }
