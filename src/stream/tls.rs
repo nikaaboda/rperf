@@ -312,7 +312,7 @@ pub mod receiver {
             })
         }
 
-        fn process_connection(&mut self) -> super::BoxResult<TcpStream> {
+        pub fn process_connection(&mut self) -> super::BoxResult<TcpStream> {
             log::info!(
                 "preparing to receive TCP stream {} connection...",
                 self.stream_idx
@@ -616,7 +616,7 @@ pub mod sender {
             })
         }
 
-        fn process_connection(&mut self) -> super::BoxResult<TcpStream> {
+        pub fn process_connection(&mut self) -> super::BoxResult<TcpStream> {
             log::info!("preparing to connect TCP stream {}...", self.stream_idx);
 
             let raw_stream =

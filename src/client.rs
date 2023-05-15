@@ -56,16 +56,16 @@ const KILL_TIMEOUT:f64 = 5.0; //once testing finishes, allow a few seconds for t
 
 const CONNECT_TIMEOUT:Duration = Duration::from_secs(2);
 
-enum ParallelStreams {
-    TcpSend(Vec<Arc<Mutex<TcpSender>>>),
-    UdpSend(Vec<Arc<Mutex<UdpSender>>>),
-    TlsSend(Vec<Arc<Mutex<TlsSender>>>),
-    KtlsSend(Vec<Arc<tokio::sync::Mutex<KtlsSender>>>),
-    TcpReceive(Vec<Arc<Mutex<TcpReceiver>>>),
-    UdpReceive(Vec<Arc<Mutex<UdpReceiver>>>),
-    TlsReceive(Vec<Arc<Mutex<TlsReceiver>>>),
-    KtlsReceive(Vec<Arc<tokio::sync::Mutex<KtlsReceiver>>>)
-}
+// enum ParallelStreams {
+//     TcpSend(Vec<Arc<Mutex<TcpSender>>>),
+//     UdpSend(Vec<Arc<Mutex<UdpSender>>>),
+//     TlsSend(Vec<Arc<Mutex<TlsSender>>>),
+//     KtlsSend(Vec<Arc<tokio::sync::Mutex<KtlsSender>>>),
+//     TcpReceive(Vec<Arc<Mutex<TcpReceiver>>>),
+//     UdpReceive(Vec<Arc<Mutex<UdpReceiver>>>),
+//     TlsReceive(Vec<Arc<Mutex<TlsReceiver>>>),
+//     KtlsReceive(Vec<Arc<tokio::sync::Mutex<KtlsReceiver>>>)
+// }
 
 
 fn connect_to_server(address:&str, port:&u16) -> BoxResult<TcpStream> {
@@ -171,6 +171,8 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
     let is_ktls = args.is_present("ktls");
 
     
+    log::info!("is it really ktls? {}", is_ktls);
+
     let test_id = uuid::Uuid::new_v4();
     let mut upload_config = prepare_upload_configuration(&args, test_id.as_bytes())?;
     let mut download_config = prepare_download_configuration(&args, test_id.as_bytes())?;
@@ -193,34 +195,35 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
     let mut parallel_streams_tls_receive = Vec::with_capacity(stream_count);
     let mut parallel_streams_ktls_receive = Vec::with_capacity(stream_count);
 
-    let parallel_streams;
+    // let parallel_streams;
 
-    if args.is_present("reverse") {
-        if is_udp {
-            parallel_streams = Some(ParallelStreams::UdpReceive(Vec::with_capacity(stream_count)));
-        } else if is_tls {
-            parallel_streams = Some(ParallelStreams::TlsReceive(Vec::with_capacity(stream_count)));
-        } else if is_ktls {
-            parallel_streams = Some(ParallelStreams::KtlsReceive(Vec::with_capacity(stream_count)));
-        } else {
-            parallel_streams = Some(ParallelStreams::TcpReceive(Vec::with_capacity(stream_count)));
-        } 
+    // if args.is_present("reverse") {
+    //     if is_udp {
+    //         parallel_streams = Some(ParallelStreams::UdpReceive(Vec::with_capacity(stream_count)));
+    //     } else if is_tls {
+    //         parallel_streams = Some(ParallelStreams::TlsReceive(Vec::with_capacity(stream_count)));
+    //     } else if is_ktls {
+    //         parallel_streams = Some(ParallelStreams::KtlsReceive(Vec::with_capacity(stream_count)));
+    //     } else {
+    //         parallel_streams = Some(ParallelStreams::TcpReceive(Vec::with_capacity(stream_count)));
+    //     } 
         
-    } else {
-        if is_udp {
-            parallel_streams = Some(ParallelStreams::UdpSend(Vec::with_capacity(stream_count)));
-        } else if is_tls {
-            parallel_streams = Some(ParallelStreams::TlsSend(Vec::with_capacity(stream_count)));
-        } else if is_ktls {
-            parallel_streams = Some(ParallelStreams::KtlsSend(Vec::with_capacity(stream_count)));
-        }else {
-            parallel_streams = Some(ParallelStreams::TcpSend(Vec::with_capacity(stream_count)));
-        }
-    }
+    // } else {
+    //     if is_udp {
+    //         parallel_streams = Some(ParallelStreams::UdpSend(Vec::with_capacity(stream_count)));
+    //     } else if is_tls {
+    //         parallel_streams = Some(ParallelStreams::TlsSend(Vec::with_capacity(stream_count)));
+    //     } else if is_ktls {
+    //         parallel_streams = Some(ParallelStreams::KtlsSend(Vec::with_capacity(stream_count)));
+    //     }else {
+    //         parallel_streams = Some(ParallelStreams::TcpSend(Vec::with_capacity(stream_count)));
+    //     }
+    // }
 
-    let mut parallel_streams = parallel_streams.unwrap();
+    // let mut parallel_streams = parallel_streams.unwrap();
 
     let mut parallel_streams_joinhandles = Vec::with_capacity(stream_count);
+    let mut parallel_streams_joinhandles_ktls = Vec::with_capacity(stream_count);
     let (results_tx, results_rx):(std::sync::mpsc::Sender<Box<dyn IntervalResult + Sync + Send>>, std::sync::mpsc::Receiver<Box<dyn IntervalResult + Sync + Send>>) = channel();
     
     let test_results:Mutex<Box<dyn TestResults>> = prepare_test_results(is_udp, is_tls, is_ktls, stream_count as u8);
@@ -441,368 +444,357 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
         //tell the server to start
         send(&mut stream, &prepare_begin())?;
         
-        log::debug!("spawning stream-threads");
-
-        match &mut parallel_streams {
-            ParallelStreams::TcpSend(_streams) => {
-                //begin the test-streams
-                for (stream_idx, parallel_stream) in parallel_streams_tcp_send.iter_mut().enumerate() {
-                    log::info!("beginning execution of stream {}...", stream_idx);
-                    let c_ps = Arc::clone(&parallel_stream);
-                    let c_results_tx = results_tx.clone();
-                    let c_cam = cpu_affinity_manager.clone();
-                    let handle = thread::spawn(move || {
-                        { //set CPU affinity, if enabled
-                            c_cam.lock().unwrap().set_affinity();
-                        }
-                        loop {
-                            let mut test = c_ps.lock().unwrap();
-                            log::debug!("beginning test-interval for stream {}", test.get_idx());
-                            match test.run_interval() {
-                                Some(interval_result) => match interval_result {
-                                    Ok(ir) => match c_results_tx.send(ir) {
-                                        Ok(_) => (),
-                                        Err(e) => {
-                                            log::error!("unable to report interval-result: {}", e);
-                                            break
-                                        },
-                                    },
-                                    Err(e) => {
-                                        log::error!("unable to process stream: {}", e);
-                                        match c_results_tx.send(Box::new(crate::protocol::results::ClientFailedResult{stream_idx: test.get_idx()})) {
-                                            Ok(_) => (),
-                                            Err(e) => log::error!("unable to report interval-failed-result: {}", e),
-                                        }
-                                        break;
-                                    },
+        log::debug!("spawning stream-threads");  
+            
+        //begin the test-streams
+        for (stream_idx, parallel_stream) in parallel_streams_tcp_send.iter_mut().enumerate() {
+            log::info!("beginning execution of stream {}...", stream_idx);
+            let c_ps = Arc::clone(&parallel_stream);
+            let c_results_tx = results_tx.clone();
+            let c_cam = cpu_affinity_manager.clone();
+            let handle = thread::spawn(move || {
+                { //set CPU affinity, if enabled
+                    c_cam.lock().unwrap().set_affinity();
+                }
+                loop {
+                    let mut test = c_ps.lock().unwrap();
+                    log::debug!("beginning test-interval for stream {}", test.get_idx());
+                    match test.run_interval() {
+                        Some(interval_result) => match interval_result {
+                            Ok(ir) => match c_results_tx.send(ir) {
+                                Ok(_) => (),
+                                Err(e) => {
+                                    log::error!("unable to report interval-result: {}", e);
+                                    break
                                 },
-                                None => {
-                                    match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
-                                        Ok(_) => (),
-                                        Err(e) => log::error!("unable to report interval-done-result: {}", e),
-                                    }
-                                    break;
-                                },
+                            },
+                            Err(e) => {
+                                log::error!("unable to process stream: {}", e);
+                                match c_results_tx.send(Box::new(crate::protocol::results::ClientFailedResult{stream_idx: test.get_idx()})) {
+                                    Ok(_) => (),
+                                    Err(e) => log::error!("unable to report interval-failed-result: {}", e),
+                                }
+                                break;
+                            },
+                        },
+                        None => {
+                            match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
+                                Ok(_) => (),
+                                Err(e) => log::error!("unable to report interval-done-result: {}", e),
                             }
-                        }
-                    });
-                    parallel_streams_joinhandles.push(handle);
-                };
-            },
-            ParallelStreams::UdpSend(_streams) => {
-                //begin the test-streams
-                for (stream_idx, parallel_stream) in parallel_streams_udp_send.iter_mut().enumerate() {
-                    log::info!("beginning execution of stream {}...", stream_idx);
-                    let c_ps = Arc::clone(&parallel_stream);
-                    let c_results_tx = results_tx.clone();
-                    let c_cam = cpu_affinity_manager.clone();
-                    let handle = thread::spawn(move || {
-                        { //set CPU affinity, if enabled
-                            c_cam.lock().unwrap().set_affinity();
-                        }
-                        loop {
-                            let mut test = c_ps.lock().unwrap();
-                            log::debug!("beginning test-interval for stream {}", test.get_idx());
-                            match test.run_interval() {
-                                Some(interval_result) => match interval_result {
-                                    Ok(ir) => match c_results_tx.send(ir) {
-                                        Ok(_) => (),
-                                        Err(e) => {
-                                            log::error!("unable to report interval-result: {}", e);
-                                            break
-                                        },
-                                    },
-                                    Err(e) => {
-                                        log::error!("unable to process stream: {}", e);
-                                        match c_results_tx.send(Box::new(crate::protocol::results::ClientFailedResult{stream_idx: test.get_idx()})) {
-                                            Ok(_) => (),
-                                            Err(e) => log::error!("unable to report interval-failed-result: {}", e),
-                                        }
-                                        break;
-                                    },
+                            break;
+                        },
+                    }
+                }
+            });
+            parallel_streams_joinhandles.push(handle);
+        };
+    
+        //begin the test-streams
+        for (stream_idx, parallel_stream) in parallel_streams_udp_send.iter_mut().enumerate() {
+            log::info!("beginning execution of stream {}...", stream_idx);
+            let c_ps = Arc::clone(&parallel_stream);
+            let c_results_tx = results_tx.clone();
+            let c_cam = cpu_affinity_manager.clone();
+            let handle = thread::spawn(move || {
+                { //set CPU affinity, if enabled
+                    c_cam.lock().unwrap().set_affinity();
+                }
+                loop {
+                    let mut test = c_ps.lock().unwrap();
+                    log::debug!("beginning test-interval for stream {}", test.get_idx());
+                    match test.run_interval() {
+                        Some(interval_result) => match interval_result {
+                            Ok(ir) => match c_results_tx.send(ir) {
+                                Ok(_) => (),
+                                Err(e) => {
+                                    log::error!("unable to report interval-result: {}", e);
+                                    break
                                 },
-                                None => {
-                                    match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
-                                        Ok(_) => (),
-                                        Err(e) => log::error!("unable to report interval-done-result: {}", e),
-                                    }
-                                    break;
-                                },
+                            },
+                            Err(e) => {
+                                log::error!("unable to process stream: {}", e);
+                                match c_results_tx.send(Box::new(crate::protocol::results::ClientFailedResult{stream_idx: test.get_idx()})) {
+                                    Ok(_) => (),
+                                    Err(e) => log::error!("unable to report interval-failed-result: {}", e),
+                                }
+                                break;
+                            },
+                        },
+                        None => {
+                            match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
+                                Ok(_) => (),
+                                Err(e) => log::error!("unable to report interval-done-result: {}", e),
                             }
-                        }
-                    });
-                    parallel_streams_joinhandles.push(handle);
-                };
-            },
-            ParallelStreams::TlsSend(_streams) => {
-                //begin the test-streams
-                for (stream_idx, parallel_stream) in parallel_streams_tls_send.iter_mut().enumerate() {
-                    log::info!("beginning execution of stream {}...", stream_idx);
-                    let c_ps = Arc::clone(&parallel_stream);
-                    let c_results_tx = results_tx.clone();
-                    let c_cam = cpu_affinity_manager.clone();
-                    let handle = thread::spawn(move || {
-                        { //set CPU affinity, if enabled
-                            c_cam.lock().unwrap().set_affinity();
-                        }
-                        loop {
-                            let mut test = c_ps.lock().unwrap();
-                            log::debug!("beginning test-interval for stream {}", test.get_idx());
-                            match test.run_interval() {
-                                Some(interval_result) => match interval_result {
-                                    Ok(ir) => match c_results_tx.send(ir) {
-                                        Ok(_) => (),
-                                        Err(e) => {
-                                            log::error!("unable to report interval-result: {}", e);
-                                            break
-                                        },
-                                    },
-                                    Err(e) => {
-                                        log::error!("unable to process stream: {}", e);
-                                        match c_results_tx.send(Box::new(crate::protocol::results::ClientFailedResult{stream_idx: test.get_idx()})) {
-                                            Ok(_) => (),
-                                            Err(e) => log::error!("unable to report interval-failed-result: {}", e),
-                                        }
-                                        break;
-                                    },
+                            break;
+                        },
+                    }
+                }
+            });
+            parallel_streams_joinhandles.push(handle);
+        };
+    
+        //begin the test-streams
+        for (stream_idx, parallel_stream) in parallel_streams_tls_send.iter_mut().enumerate() {
+            log::info!("beginning execution of stream {}...", stream_idx);
+            let c_ps = Arc::clone(&parallel_stream);
+            let c_results_tx = results_tx.clone();
+            let c_cam = cpu_affinity_manager.clone();
+            let handle = thread::spawn(move || {
+                { //set CPU affinity, if enabled
+                    c_cam.lock().unwrap().set_affinity();
+                }
+                loop {
+                    let mut test = c_ps.lock().unwrap();
+                    log::debug!("beginning test-interval for stream {}", test.get_idx());
+                    match test.run_interval() {
+                        Some(interval_result) => match interval_result {
+                            Ok(ir) => match c_results_tx.send(ir) {
+                                Ok(_) => (),
+                                Err(e) => {
+                                    log::error!("unable to report interval-result: {}", e);
+                                    break
                                 },
-                                None => {
-                                    match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
-                                        Ok(_) => (),
-                                        Err(e) => log::error!("unable to report interval-done-result: {}", e),
-                                    }
-                                    break;
-                                },
+                            },
+                            Err(e) => {
+                                log::error!("unable to process stream: {}", e);
+                                match c_results_tx.send(Box::new(crate::protocol::results::ClientFailedResult{stream_idx: test.get_idx()})) {
+                                    Ok(_) => (),
+                                    Err(e) => log::error!("unable to report interval-failed-result: {}", e),
+                                }
+                                break;
+                            },
+                        },
+                        None => {
+                            match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
+                                Ok(_) => (),
+                                Err(e) => log::error!("unable to report interval-done-result: {}", e),
                             }
-                        }
-                    });
-                    parallel_streams_joinhandles.push(handle);
-                };
-            },
-            ParallelStreams::KtlsSend(_streams) => {
-                for (stream_idx, parallel_stream) in parallel_streams_ktls_send.iter_mut().enumerate() {
-                    log::info!("beginning execution of stream {}...", stream_idx);
-                    let c_ps = Arc::clone(&parallel_stream);
-                    let c_results_tx = results_tx.clone();
-                    let c_cam = cpu_affinity_manager.clone();
-                    let handle = tokio::spawn(async move {
-                        { //set CPU affinity, if enabled
-                            c_cam.lock().unwrap().set_affinity();
-                        }
-                        loop {
-                            let mut test = c_ps.lock().await;
-                            // log::debug!("beginning test-interval for stream {}", test.get_idx());
-                            match test.run_interval().await.unwrap() {
-                                interval_result => match interval_result {
-                                    Ok(ir) => match c_results_tx.send(ir) {
-                                        Ok(_) => (),
-                                        Err(e) => {
-                                            log::error!("unable to report interval-result: {}", e);
-                                            break
-                                        },
-                                    },
-                                    Err(e) => {
-                                        log::error!("unable to process stream: {}", e);
-                                        match c_results_tx.send(Box::new(crate::protocol::results::ClientFailedResult{stream_idx: test.get_idx()})) {
-                                            Ok(_) => (),
-                                            Err(e) => log::error!("unable to report interval-failed-result: {}", e),
-                                        }
-                                        break;
-                                    },
+                            break;
+                        },
+                    }
+                }
+            });
+            parallel_streams_joinhandles.push(handle);
+        };
+    
+        for (stream_idx, parallel_stream) in parallel_streams_ktls_send.iter_mut().enumerate() {
+            log::info!("beginning execution of stream {}...", stream_idx);
+            let c_ps = Arc::clone(&parallel_stream);
+            let c_results_tx = results_tx.clone();
+            let c_cam = cpu_affinity_manager.clone();
+            let handle = tokio::spawn(async move {
+                { //set CPU affinity, if enabled
+                    c_cam.lock().unwrap().set_affinity();
+                }
+                loop {
+                    let mut test = c_ps.lock().await;
+                    // log::debug!("beginning test-interval for stream {}", test.get_idx());
+                    match test.run_interval().await.unwrap() {
+                        interval_result => match interval_result {
+                            Ok(ir) => match c_results_tx.send(ir) {
+                                Ok(_) => (),
+                                Err(e) => {
+                                    log::error!("unable to report interval-result: {}", e);
+                                    break
                                 },
-                                // None => {
-                                //     match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
-                                //         Ok(_) => (),
-                                //         Err(e) => log::error!("unable to report interval-done-result: {}", e),
-                                //     }
-                                //     break;
-                                // },
+                            },
+                            Err(e) => {
+                                log::error!("unable to process stream: {}", e);
+                                match c_results_tx.send(Box::new(crate::protocol::results::ClientFailedResult{stream_idx: test.get_idx()})) {
+                                    Ok(_) => (),
+                                    Err(e) => log::error!("unable to report interval-failed-result: {}", e),
+                                }
+                                break;
+                            },
+                        },
+                        // None => {
+                        //     match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
+                        //         Ok(_) => (),
+                        //         Err(e) => log::error!("unable to report interval-done-result: {}", e),
+                        //     }
+                        //     break;
+                        // },
+                    }
+                }
+            });
+            parallel_streams_joinhandles_ktls.push(handle);
+        };
+    
+        //begin the test-streams
+        for (stream_idx, parallel_stream) in parallel_streams_tcp_receive.iter_mut().enumerate() {
+            log::info!("beginning execution of stream {}...", stream_idx);
+            let c_ps = Arc::clone(&parallel_stream);
+            let c_results_tx = results_tx.clone();
+            let c_cam = cpu_affinity_manager.clone();
+            let handle = thread::spawn(move || {
+                { //set CPU affinity, if enabled
+                    c_cam.lock().unwrap().set_affinity();
+                }
+                loop {
+                    let mut test = c_ps.lock().unwrap();
+                    log::debug!("beginning test-interval for stream {}", test.get_idx());
+                    match test.run_interval() {
+                        Some(interval_result) => match interval_result {
+                            Ok(ir) => match c_results_tx.send(ir) {
+                                Ok(_) => (),
+                                Err(e) => {
+                                    log::error!("unable to report interval-result: {}", e);
+                                    break
+                                },
+                            },
+                            Err(e) => {
+                                log::error!("unable to process stream: {}", e);
+                                match c_results_tx.send(Box::new(crate::protocol::results::ClientFailedResult{stream_idx: test.get_idx()})) {
+                                    Ok(_) => (),
+                                    Err(e) => log::error!("unable to report interval-failed-result: {}", e),
+                                }
+                                break;
+                            },
+                        },
+                        None => {
+                            match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
+                                Ok(_) => (),
+                                Err(e) => log::error!("unable to report interval-done-result: {}", e),
                             }
-                        }
-                    });
-                    // parallel_streams_joinhandles.push(handle);
-                };
-            }
-            ParallelStreams::TcpReceive(_streams) => {
-                //begin the test-streams
-                for (stream_idx, parallel_stream) in parallel_streams_tcp_receive.iter_mut().enumerate() {
-                    log::info!("beginning execution of stream {}...", stream_idx);
-                    let c_ps = Arc::clone(&parallel_stream);
-                    let c_results_tx = results_tx.clone();
-                    let c_cam = cpu_affinity_manager.clone();
-                    let handle = thread::spawn(move || {
-                        { //set CPU affinity, if enabled
-                            c_cam.lock().unwrap().set_affinity();
-                        }
-                        loop {
-                            let mut test = c_ps.lock().unwrap();
-                            log::debug!("beginning test-interval for stream {}", test.get_idx());
-                            match test.run_interval() {
-                                Some(interval_result) => match interval_result {
-                                    Ok(ir) => match c_results_tx.send(ir) {
-                                        Ok(_) => (),
-                                        Err(e) => {
-                                            log::error!("unable to report interval-result: {}", e);
-                                            break
-                                        },
-                                    },
-                                    Err(e) => {
-                                        log::error!("unable to process stream: {}", e);
-                                        match c_results_tx.send(Box::new(crate::protocol::results::ClientFailedResult{stream_idx: test.get_idx()})) {
-                                            Ok(_) => (),
-                                            Err(e) => log::error!("unable to report interval-failed-result: {}", e),
-                                        }
-                                        break;
-                                    },
+                            break;
+                        },
+                    }
+                }
+            });
+            parallel_streams_joinhandles.push(handle);
+        };
+    
+        //begin the test-streams
+        for (stream_idx, parallel_stream) in parallel_streams_udp_receive.iter_mut().enumerate() {
+            log::info!("beginning execution of stream {}...", stream_idx);
+            let c_ps = Arc::clone(&parallel_stream);
+            let c_results_tx = results_tx.clone();
+            let c_cam = cpu_affinity_manager.clone();
+            let handle = thread::spawn(move || {
+                { //set CPU affinity, if enabled
+                    c_cam.lock().unwrap().set_affinity();
+                }
+                loop {
+                    let mut test = c_ps.lock().unwrap();
+                    log::debug!("beginning test-interval for stream {}", test.get_idx());
+                    match test.run_interval() {
+                        Some(interval_result) => match interval_result {
+                            Ok(ir) => match c_results_tx.send(ir) {
+                                Ok(_) => (),
+                                Err(e) => {
+                                    log::error!("unable to report interval-result: {}", e);
+                                    break
                                 },
-                                None => {
-                                    match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
-                                        Ok(_) => (),
-                                        Err(e) => log::error!("unable to report interval-done-result: {}", e),
-                                    }
-                                    break;
-                                },
+                            },
+                            Err(e) => {
+                                log::error!("unable to process stream: {}", e);
+                                match c_results_tx.send(Box::new(crate::protocol::results::ClientFailedResult{stream_idx: test.get_idx()})) {
+                                    Ok(_) => (),
+                                    Err(e) => log::error!("unable to report interval-failed-result: {}", e),
+                                }
+                                break;
+                            },
+                        },
+                        None => {
+                            match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
+                                Ok(_) => (),
+                                Err(e) => log::error!("unable to report interval-done-result: {}", e),
                             }
-                        }
-                    });
-                    parallel_streams_joinhandles.push(handle);
-                };
-            },
-            ParallelStreams::UdpReceive(_streams) => {
-                //begin the test-streams
-                for (stream_idx, parallel_stream) in parallel_streams_udp_receive.iter_mut().enumerate() {
-                    log::info!("beginning execution of stream {}...", stream_idx);
-                    let c_ps = Arc::clone(&parallel_stream);
-                    let c_results_tx = results_tx.clone();
-                    let c_cam = cpu_affinity_manager.clone();
-                    let handle = thread::spawn(move || {
-                        { //set CPU affinity, if enabled
-                            c_cam.lock().unwrap().set_affinity();
-                        }
-                        loop {
-                            let mut test = c_ps.lock().unwrap();
-                            log::debug!("beginning test-interval for stream {}", test.get_idx());
-                            match test.run_interval() {
-                                Some(interval_result) => match interval_result {
-                                    Ok(ir) => match c_results_tx.send(ir) {
-                                        Ok(_) => (),
-                                        Err(e) => {
-                                            log::error!("unable to report interval-result: {}", e);
-                                            break
-                                        },
-                                    },
-                                    Err(e) => {
-                                        log::error!("unable to process stream: {}", e);
-                                        match c_results_tx.send(Box::new(crate::protocol::results::ClientFailedResult{stream_idx: test.get_idx()})) {
-                                            Ok(_) => (),
-                                            Err(e) => log::error!("unable to report interval-failed-result: {}", e),
-                                        }
-                                        break;
-                                    },
+                            break;
+                        },
+                    }
+                }
+            });
+            parallel_streams_joinhandles.push(handle);
+        };
+    
+        //begin the test-streams
+        for (stream_idx, parallel_stream) in parallel_streams_tls_receive.iter_mut().enumerate() {
+            log::info!("beginning execution of stream {}...", stream_idx);
+            let c_ps = Arc::clone(&parallel_stream);
+            let c_results_tx = results_tx.clone();
+            let c_cam = cpu_affinity_manager.clone();
+            let handle = thread::spawn(move || {
+                { //set CPU affinity, if enabled
+                    c_cam.lock().unwrap().set_affinity();
+                }
+                loop {
+                    let mut test = c_ps.lock().unwrap();
+                    log::debug!("beginning test-interval for stream {}", test.get_idx());
+                    match test.run_interval() {
+                        Some(interval_result) => match interval_result {
+                            Ok(ir) => match c_results_tx.send(ir) {
+                                Ok(_) => (),
+                                Err(e) => {
+                                    log::error!("unable to report interval-result: {}", e);
+                                    break
                                 },
-                                None => {
-                                    match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
-                                        Ok(_) => (),
-                                        Err(e) => log::error!("unable to report interval-done-result: {}", e),
-                                    }
-                                    break;
-                                },
+                            },
+                            Err(e) => {
+                                log::error!("unable to process stream: {}", e);
+                                match c_results_tx.send(Box::new(crate::protocol::results::ClientFailedResult{stream_idx: test.get_idx()})) {
+                                    Ok(_) => (),
+                                    Err(e) => log::error!("unable to report interval-failed-result: {}", e),
+                                }
+                                break;
+                            },
+                        },
+                        None => {
+                            match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
+                                Ok(_) => (),
+                                Err(e) => log::error!("unable to report interval-done-result: {}", e),
                             }
-                        }
-                    });
-                    parallel_streams_joinhandles.push(handle);
-                };
-            },
-            ParallelStreams::TlsReceive(_streams) => {
-                //begin the test-streams
-                for (stream_idx, parallel_stream) in parallel_streams_tls_receive.iter_mut().enumerate() {
-                    log::info!("beginning execution of stream {}...", stream_idx);
-                    let c_ps = Arc::clone(&parallel_stream);
-                    let c_results_tx = results_tx.clone();
-                    let c_cam = cpu_affinity_manager.clone();
-                    let handle = thread::spawn(move || {
-                        { //set CPU affinity, if enabled
-                            c_cam.lock().unwrap().set_affinity();
-                        }
-                        loop {
-                            let mut test = c_ps.lock().unwrap();
-                            log::debug!("beginning test-interval for stream {}", test.get_idx());
-                            match test.run_interval() {
-                                Some(interval_result) => match interval_result {
-                                    Ok(ir) => match c_results_tx.send(ir) {
-                                        Ok(_) => (),
-                                        Err(e) => {
-                                            log::error!("unable to report interval-result: {}", e);
-                                            break
-                                        },
-                                    },
-                                    Err(e) => {
-                                        log::error!("unable to process stream: {}", e);
-                                        match c_results_tx.send(Box::new(crate::protocol::results::ClientFailedResult{stream_idx: test.get_idx()})) {
-                                            Ok(_) => (),
-                                            Err(e) => log::error!("unable to report interval-failed-result: {}", e),
-                                        }
-                                        break;
-                                    },
+                            break;
+                        },
+                    }
+                }
+            });
+            parallel_streams_joinhandles.push(handle);
+        };
+    
+        for (stream_idx, parallel_stream) in parallel_streams_ktls_receive.iter_mut().enumerate() {
+            log::info!("beginning execution of stream {}...", stream_idx);
+            let c_ps = Arc::clone(&parallel_stream);
+            let c_results_tx = results_tx.clone();
+            let c_cam = cpu_affinity_manager.clone();
+            let handle = tokio::spawn(async move {
+                { //set CPU affinity, if enabled
+                    c_cam.lock().unwrap().set_affinity();
+                }
+                loop {
+                    let mut test = c_ps.lock().await;
+                    log::debug!("beginning test-interval for stream {}", test.get_idx());
+                    match test.run_interval().await.unwrap() {
+                        interval_result => match interval_result {
+                            Ok(ir) => match c_results_tx.send(ir) {
+                                Ok(_) => (),
+                                Err(e) => {
+                                    log::error!("unable to report interval-result: {}", e);
+                                    break
                                 },
-                                None => {
-                                    match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
-                                        Ok(_) => (),
-                                        Err(e) => log::error!("unable to report interval-done-result: {}", e),
-                                    }
-                                    break;
-                                },
-                            }
-                        }
-                    });
-                    parallel_streams_joinhandles.push(handle);
-                };
-            },
-            ParallelStreams::KtlsReceive(_streams) => {
-                for (stream_idx, parallel_stream) in parallel_streams_ktls_receive.iter_mut().enumerate() {
-                    log::info!("beginning execution of stream {}...", stream_idx);
-                    let c_ps = Arc::clone(&parallel_stream);
-                    let c_results_tx = results_tx.clone();
-                    let c_cam = cpu_affinity_manager.clone();
-                    let handle = tokio::spawn(async move {
-                        // { //set CPU affinity, if enabled
-                        //     c_cam.lock().unwrap().set_affinity();
-                        // }
-                        loop {
-                            let mut test = c_ps.lock().await;
-                            log::debug!("beginning test-interval for stream {}", test.get_idx());
-                            match test.run_interval().await.unwrap() {
-                                interval_result => match interval_result {
-                                    Ok(ir) => match c_results_tx.send(ir) {
-                                        Ok(_) => (),
-                                        Err(e) => {
-                                            log::error!("unable to report interval-result: {}", e);
-                                            break
-                                        },
-                                    },
-                                    Err(e) => {
-                                        log::error!("unable to process stream: {}", e);
-                                        match c_results_tx.send(Box::new(crate::protocol::results::ClientFailedResult{stream_idx: test.get_idx()})) {
-                                            Ok(_) => (),
-                                            Err(e) => log::error!("unable to report interval-failed-result: {}", e),
-                                        }
-                                        break;
-                                    },
-                                },
-                                // None => {
-                                //     match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
-                                //         Ok(_) => (),
-                                //         Err(e) => log::error!("unable to report interval-done-result: {}", e),
-                                //     }
-                                //     break;
-                                // },
-                            }
-                        }
-                    });
-                    // parallel_streams_joinhandles.push(handle);
-                };
-            }
-        }
+                            },
+                            Err(e) => {
+                                log::error!("unable to process stream: {}", e);
+                                match c_results_tx.send(Box::new(crate::protocol::results::ClientFailedResult{stream_idx: test.get_idx()})) {
+                                    Ok(_) => (),
+                                    Err(e) => log::error!("unable to report interval-failed-result: {}", e),
+                                }
+                                break;
+                            },
+                        },
+                        // None => {
+                        //     match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
+                        //         Ok(_) => (),
+                        //         Err(e) => log::error!("unable to report interval-done-result: {}", e),
+                        //     }
+                        //     break;
+                        // },
+                    }
+                }
+            });
+            parallel_streams_joinhandles_ktls.push(handle);
+        };
  
         //watch for events from the server
         while is_alive() {
@@ -871,9 +863,9 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
     stream.shutdown(Shutdown::Both).unwrap_or_default();
     
     log::debug!("stopping any still-in-progress streams");
-    match &mut parallel_streams {
-        ParallelStreams::TcpSend(streams) => {
-            for ps in streams.iter_mut() {
+    
+        
+    for ps in parallel_streams_tcp_send.iter_mut() {
         let mut stream = match (*ps).lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -883,9 +875,8 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
         };
         stream.stop();
     }
-        },
-        ParallelStreams::UdpSend(streams) => {
-            for ps in streams.iter_mut() {
+         
+    for ps in parallel_streams_udp_send.iter_mut() {
         let mut stream = match (*ps).lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -895,86 +886,85 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
         };
         stream.stop();
     }
-        },
-        ParallelStreams::TlsSend(streams) => {
-            for ps in streams.iter_mut() {
-                let mut stream = match (*ps).lock() {
-                    Ok(guard) => guard,
-                    Err(poisoned) => {
-                        log::error!("a stream-handler was poisoned; this indicates some sort of logic error");
-                        poisoned.into_inner()
-                    },
-                };
-                stream.stop();
-            }
-        },
-        ParallelStreams::KtlsSend(streams) => {
-            for ps in streams.iter_mut() {
-                let mut stream = match (*ps).lock() {
-                    guard => guard,
-                    // Err(poisoned) => {
-                    //     log::error!("a stream-handler was poisoned; this indicates some sort of logic error");
-                    //     poisoned.into_inner()
-                    // },
-                };
-                log::info!("should have stopped");
-                // stream.stop();
-                break;
-            }
-        }
-        ParallelStreams::TcpReceive(streams) => {
-            for ps in streams.iter_mut() {
-                let mut stream = match (*ps).lock() {
-                    Ok(guard) => guard,
-                    Err(poisoned) => {
-                        log::error!("a stream-handler was poisoned; this indicates some sort of logic error");
-                        poisoned.into_inner()
-                    },
-                };
-                stream.stop();
-            }
-        },
-        ParallelStreams::UdpReceive(streams) => {
-            for ps in streams.iter_mut() {
-                let mut stream = match (*ps).lock() {
-                    Ok(guard) => guard,
-                    Err(poisoned) => {
-                        log::error!("a stream-handler was poisoned; this indicates some sort of logic error");
-                        poisoned.into_inner()
-                    },
-                };
-                stream.stop();
-            }
-        },
-        ParallelStreams::TlsReceive(streams) => {
-            for ps in streams.iter_mut() {
-                let mut stream = match (*ps).lock() {
-                    Ok(guard) => guard,
-                    Err(poisoned) => {
-                        log::error!("a stream-handler was poisoned; this indicates some sort of logic error");
-                        poisoned.into_inner()
-                    },
-                };
-                stream.stop();
-            }
-        },
-        ParallelStreams::KtlsReceive(streams) => {
-            for ps in streams.iter_mut() {
-                let mut stream = match (*ps).lock() {
-                    guard => guard,
-                    // Err(poisoned) => {
-                    //     log::error!("a stream-handler was poisoned; this indicates some sort of logic error");
-                    //     poisoned.into_inner()
-                    // },
-                };
-                log::info!("should have stopped");
-                // stream.stop();
-            }
-        }
+        
+    for ps in parallel_streams_tls_send.iter_mut() {
+        let mut stream = match (*ps).lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                log::error!("a stream-handler was poisoned; this indicates some sort of logic error");
+                poisoned.into_inner()
+            },
+        };
+        stream.stop();
     }
+     
+    for ps in parallel_streams_ktls_send.iter_mut() {
+        let mut stream = match (*ps).lock().await {
+            guard => guard,
+            // Err(poisoned) => {
+            //     log::error!("a stream-handler was poisoned; this indicates some sort of logic error");
+            //     poisoned.into_inner()
+            // },
+        };
+        // log::info!("should have stopped");
+        stream.stop();
+    }
+
+    for ps in parallel_streams_tcp_receive.iter_mut() {
+        let mut stream = match (*ps).lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                log::error!("a stream-handler was poisoned; this indicates some sort of logic error");
+                poisoned.into_inner()
+            },
+        };
+        stream.stop();
+    }
+        
+    for ps in parallel_streams_udp_receive.iter_mut() {
+        let mut stream = match (*ps).lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                log::error!("a stream-handler was poisoned; this indicates some sort of logic error");
+                poisoned.into_inner()
+            },
+        };
+        stream.stop();
+    }
+        
+    for ps in parallel_streams_tls_receive.iter_mut() {
+        let mut stream = match (*ps).lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                log::error!("a stream-handler was poisoned; this indicates some sort of logic error");
+                poisoned.into_inner()
+            },
+        };
+        stream.stop();
+    }
+        
+    for ps in parallel_streams_ktls_receive.iter_mut() {
+        let mut stream = match (*ps).lock().await {
+            guard => guard,
+            // Err(poisoned) => {
+            //     log::error!("a stream-handler was poisoned; this indicates some sort of logic error");
+            //     poisoned.into_inner()
+            // },
+        };
+        log::info!("should have stopped");
+        stream.stop();
+    }
+    
     log::debug!("waiting for all streams to end");
     for jh in parallel_streams_joinhandles {
         match jh.join() {
+            Ok(_) => (),
+            Err(e) => log::error!("error in parallel stream: {:?}", e),
+        }
+    }
+
+    for jh in parallel_streams_joinhandles_ktls {
+        match jh.await {
             Ok(_) => (),
             Err(e) => log::error!("error in parallel stream: {:?}", e),
         }

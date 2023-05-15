@@ -385,7 +385,7 @@ pub mod receiver {
                         self.stream_idx,
                     ))));
                 }
-
+                log::info!("ktls reading");
                 match stream.read_exact(&mut buf).await.unwrap() {
                     packet_size => {
                         if packet_size == 0 {
@@ -529,7 +529,7 @@ pub mod sender {
                 .with_root_certificates(root_certs)
                 .with_no_client_auth();
 
-            let ip_addr = &"localhost".to_string()[..];
+            
 
             let tls_connector = tokio_rustls::TlsConnector::from(Arc::new(config));
 
@@ -614,17 +614,23 @@ pub mod sender {
                 }
             }
 
+            log::info!("started ktls conversion");
+            let ip_addr = &"localhost".to_string()[..];
+            let server_name = ip_addr
+                .try_into()
+                .expect("IP address is not valid server name");
             // let stream = self.stream.as_mut().unwrap();
             let mut stream_clone = Default::default();
             swap(&mut stream_clone, &mut self.stream);
-            let stream = SpyStream(stream_clone.unwrap());
+            let stream = SpyStream(stream_clone.expect("could not finish spy stream"));
             let stream = CorkStream::new(stream);
             let stream = self
                 .tls_connector
-                .connect("localhost".try_into().unwrap(), stream)
+                .connect(server_name, stream)
                 .await
-                .unwrap();
-            let mut stream = ktls::config_ktls_client(stream).await.unwrap();
+                .expect("finish tls connection");
+            let mut stream = ktls::config_ktls_client(stream).await.expect("finish ktls config");
+            log::info!("finished ktls conversion");
 
             let interval_duration = Duration::from_secs_f32(self.send_interval);
             let mut interval_iteration = 0;
@@ -642,7 +648,7 @@ pub mod sender {
 
             while self.active && self.remaining_duration > 0.0 && bytes_to_send_remaining > 0 {
                 let packet_start = Instant::now();
-
+                log::info!("ktls writing");
                 match stream.write_all(&mut self.staged_buffer).await.unwrap() {
                     //it doesn't matter if the whole thing couldn't be written, since it's just garbage data
                     empty => {

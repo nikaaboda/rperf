@@ -305,6 +305,7 @@ async fn main() {
         //     std::process::exit(4);
         // }
     } else if args.is_present("client") {
+        log::info!("family is ktls: {}", args.is_present("ktls"));
         log::debug!("registering SIGINT handler...");
         ctrlc::set_handler(move || {
             if client::kill() {
@@ -316,7 +317,7 @@ async fn main() {
         }).expect("unable to set SIGINT handler");
         
         log::debug!("connecting to server...");
-        let execution = client::execute(args).await.unwrap();
+        let execution = client::execute(args).await.expect("client could not run");
         // if execution. {
         //     log::error!("unable to run client: {}", execution.unwrap_err());
         //     std::process::exit(4);
