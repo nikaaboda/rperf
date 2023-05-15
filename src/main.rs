@@ -29,7 +29,8 @@ mod utils;
 mod client;
 mod server;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = App::new("rperf")
         .about(clap::crate_description!())
         .author("https://github.com/opensource-3d-p/rperf")
@@ -294,11 +295,11 @@ fn main() {
         }).expect("unable to set SIGINT handler");
         
         log::debug!("connecting to server...");
-        let execution = client::execute(args);
-        if execution.is_err() {
-            log::error!("unable to run client: {}", execution.unwrap_err());
-            std::process::exit(4);
-        }
+        let execution = client::execute(args).await.unwrap();
+        // if execution. {
+        //     log::error!("unable to run client: {}", execution.unwrap_err());
+        //     std::process::exit(4);
+        // }
     } else {
         std::println!("{}", args.usage());
         std::process::exit(2);
