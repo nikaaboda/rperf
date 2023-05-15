@@ -80,6 +80,7 @@ pub mod receiver {
     use rustls::version::TLS13;
     use rustls::{Certificate, KeyLogFile, PrivateKey, ServerConfig};
     use tokio;
+    use tokio::io::AsyncReadExt;
 
     use super::SpyStream;
 
@@ -457,6 +458,7 @@ pub mod sender {
     use std::time::{Duration, Instant};
 
     use ktls::CorkStream;
+    use tokio::io::AsyncWriteExt;
     use tokio_rustls::rustls::cipher_suite::TLS13_AES_128_GCM_SHA256;
     use tokio_rustls::rustls::version::TLS13;
     use tokio_rustls::rustls::{Certificate, ClientConfig, RootCertStore};
