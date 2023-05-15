@@ -36,7 +36,7 @@ use crate::protocol::messaging::{
     prepare_upload_configuration, prepare_download_configuration,
 };
 
-use crate::protocol::results::{IntervalResult, IntervalResultKind, TestResults, TcpTestResults, UdpTestResults, TlsTestResults};
+use crate::protocol::results::{IntervalResult, IntervalResultKind, TestResults, TcpTestResults, UdpTestResults, TlsTestResults, KtlsTestResults};
 
 // use crate::stream::TestStream;
 use crate::stream::tcp;
@@ -92,7 +92,7 @@ fn connect_to_server(address:&str, port:&u16) -> BoxResult<TcpStream> {
     Ok(stream)
 }
 
-fn prepare_test_results(is_udp:bool, is_tls:bool, stream_count:u8) -> Mutex<Box<dyn TestResults>> {
+fn prepare_test_results(is_udp:bool, is_tls:bool, is_ktls:bool, stream_count:u8) -> Mutex<Box<dyn TestResults>> {
     if is_udp { //UDP
         let mut udp_test_results = UdpTestResults::new();
         for i in 0..stream_count {
@@ -105,6 +105,12 @@ fn prepare_test_results(is_udp:bool, is_tls:bool, stream_count:u8) -> Mutex<Box<
             tls_test_results.prepare_index(&i);
         }
         Mutex::new(Box::new(tls_test_results))
+    } else if is_ktls {
+        let mut ktls_test_results = KtlsTestResults::new();
+        for i in 0..stream_count {
+            ktls_test_results.prepare_index(&i);
+        }
+        Mutex::new(Box::new(ktls_test_results))
     } else { //TCP
         let mut tcp_test_results = TcpTestResults::new();
         for i in 0..stream_count {
@@ -163,6 +169,7 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
     let is_udp = args.is_present("udp");
     let is_tls = args.is_present("tls");
     let is_ktls = args.is_present("ktls");
+
     
     let test_id = uuid::Uuid::new_v4();
     let mut upload_config = prepare_upload_configuration(&args, test_id.as_bytes())?;
@@ -216,7 +223,7 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
     let mut parallel_streams_joinhandles = Vec::with_capacity(stream_count);
     let (results_tx, results_rx):(std::sync::mpsc::Sender<Box<dyn IntervalResult + Sync + Send>>, std::sync::mpsc::Receiver<Box<dyn IntervalResult + Sync + Send>>) = channel();
     
-    let test_results:Mutex<Box<dyn TestResults>> = prepare_test_results(is_udp, is_tls, stream_count as u8);
+    let test_results:Mutex<Box<dyn TestResults>> = prepare_test_results(is_udp, is_tls, is_ktls, stream_count as u8);
     
     //a closure used to pass results from stream-handlers to the test-result structure
     let mut results_handler = || -> BoxResult<()> {
