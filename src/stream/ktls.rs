@@ -5,7 +5,7 @@ use nix::sys::socket::{setsockopt, sockopt::SndBuf};
 use crate::protocol::results::{
     get_unix_timestamp, IntervalResult, TlsReceiveResult, TlsSendResult,
 };
-use std::os::fd::{RawFd, AsRawFd};
+use std::os::fd::{AsRawFd, RawFd};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{parse_port_spec, INTERVAL};
@@ -76,12 +76,10 @@ pub mod receiver {
     use std::vec;
 
     use ktls::CorkStream;
-    use tokio::io::AsyncReadExt;
-    use tokio_rustls::rustls::cipher_suite::TLS13_AES_128_GCM_SHA256;
-    use tokio_rustls::rustls::version::TLS13;
-    use tokio_rustls::rustls::{Certificate, KeyLogFile, PrivateKey, ServerConfig};
+    use rustls::cipher_suite::TLS13_AES_128_GCM_SHA256;
+    use rustls::version::TLS13;
+    use rustls::{Certificate, KeyLogFile, PrivateKey, ServerConfig};
     use tokio;
-    use tokio_rustls::TlsAcceptor;
 
     use super::SpyStream;
 
@@ -242,7 +240,7 @@ pub mod receiver {
         listener: Option<tokio::net::TcpListener>,
         stream: Option<tokio::net::TcpStream>,
 
-        tls_acceptor: TlsAcceptor,
+        tls_acceptor: tokio_rustls::TlsAcceptor,
     }
     impl KtlsReceiver {
         pub async fn new(
@@ -451,16 +449,14 @@ pub mod receiver {
 
 pub mod sender {
     use std::fs::File;
-    use std::io::{Read};
+    use std::io::Read;
     use std::mem::swap;
     use std::net::{IpAddr, SocketAddr};
     use std::os::unix::io::AsRawFd;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-
     use ktls::CorkStream;
-    use tokio::io::AsyncWriteExt;
     use tokio_rustls::rustls::cipher_suite::TLS13_AES_128_GCM_SHA256;
     use tokio_rustls::rustls::version::TLS13;
     use tokio_rustls::rustls::{Certificate, ClientConfig, RootCertStore};
@@ -621,10 +617,12 @@ pub mod sender {
             swap(&mut stream_clone, &mut self.stream);
             let stream = SpyStream(stream_clone.unwrap());
             let stream = CorkStream::new(stream);
-            let stream = self.tls_connector.connect("localhost".try_into().unwrap(), stream).await.unwrap();
+            let stream = self
+                .tls_connector
+                .connect("localhost".try_into().unwrap(), stream)
+                .await
+                .unwrap();
             let mut stream = ktls::config_ktls_client(stream).await.unwrap();
-            
-            
 
             let interval_duration = Duration::from_secs_f32(self.send_interval);
             let mut interval_iteration = 0;
@@ -667,16 +665,15 @@ pub mod sender {
                                 sends_blocked: sends_blocked,
                             })));
                         }
-                    }
-                    // Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    //     //send-buffer is full
-                    //     //nothing to do, but avoid burning CPU cycles
-                    //     sleep(BUFFER_FULL_TIMEOUT);
-                    //     sends_blocked += 1;
-                    // }
-                    // Err(e) => {
-                    //     return Some(Err(Box::new(e)));
-                    // }
+                    } // Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                      //     //send-buffer is full
+                      //     //nothing to do, but avoid burning CPU cycles
+                      //     sleep(BUFFER_FULL_TIMEOUT);
+                      //     sends_blocked += 1;
+                      // }
+                      // Err(e) => {
+                      //     return Some(Err(Box::new(e)));
+                      // }
                 }
 
                 if bytes_to_send_remaining <= 0 {

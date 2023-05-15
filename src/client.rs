@@ -309,7 +309,7 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
                     // &(download_config["receive_buffer"].as_i64().unwrap() as usize),
                 ).await.unwrap();
                 stream_ports.push(test.get_port()?);
-                parallel_streams_ktls_receive.push(Arc::new(Mutex::new(test)));
+                parallel_streams_ktls_receive.push(Arc::new(tokio::sync::Mutex::new(test)));
             } 
         } else { //TCP
             log::info!("preparing for reverse-TCP test with {} streams...", stream_count);
@@ -393,7 +393,7 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
                                 &(upload_config["send_buffer"].as_i64().unwrap() as usize),
                                 &(upload_config["no_delay"].as_bool().unwrap()),
                             )?;
-                            parallel_streams_ktls_send.push(Arc::new(Mutex::new(test)));
+                            parallel_streams_ktls_send.push(Arc::new(tokio::sync::Mutex::new(test)));
                         }  
                     } else { //TCP
                         log::info!("preparing for TCP test with {} streams...", stream_count);
@@ -583,8 +583,8 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
                             c_cam.lock().unwrap().set_affinity();
                         }
                         loop {
-                            let mut test = c_ps.lock().unwrap();
-                            log::debug!("beginning test-interval for stream {}", test.get_idx());
+                            let mut test = c_ps.lock().await;
+                            // log::debug!("beginning test-interval for stream {}", test.get_idx());
                             match test.run_interval().await.unwrap() {
                                 interval_result => match interval_result {
                                     Ok(ir) => match c_results_tx.send(ir) {
@@ -762,7 +762,7 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
                         //     c_cam.lock().unwrap().set_affinity();
                         // }
                         loop {
-                            let mut test = c_ps.lock().unwrap();
+                            let mut test = c_ps.lock().await;
                             log::debug!("beginning test-interval for stream {}", test.get_idx());
                             match test.run_interval().await.unwrap() {
                                 interval_result => match interval_result {
@@ -910,7 +910,7 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
                     //     poisoned.into_inner()
                     // },
                 };
-                stream.await;
+                // stream.stop();
             }
         }
         ParallelStreams::TcpReceive(streams) => {
@@ -958,7 +958,7 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
                     //     poisoned.into_inner()
                     // },
                 };
-                stream.await;
+                // stream.stop();
             }
         }
     }
