@@ -36,13 +36,22 @@ use crate::protocol::communication::{receive, send, KEEPALIVE_DURATION};
 
 use crate::protocol::messaging::{prepare_connect, prepare_connect_ready};
 
-use crate::stream::tcp;
 use crate::stream::tls;
 use crate::stream::udp;
+use crate::stream::{ktls, tcp};
 // use crate::stream::TestStream;
 use crate::stream::{
-    tcp::receiver::TcpReceiver, tcp::sender::TcpSender, tls::receiver::TlsReceiver,
-    tls::sender::TlsSender, udp::receiver::UdpReceiver, udp::sender::UdpSender,
+    ktls::{
+        receiver::{KtlsPortPool, KtlsReceiver},
+        sender::KtlsSender,
+        KtlsTestDefinition,
+    },
+    tcp::receiver::TcpReceiver,
+    tcp::sender::TcpSender,
+    tls::receiver::TlsReceiver,
+    tls::sender::TlsSender,
+    udp::receiver::UdpReceiver,
+    udp::sender::UdpSender,
 };
 
 type BoxResult<T> = Result<T, Box<dyn Error>>;
@@ -59,17 +68,20 @@ enum ParallelStreams {
     TcpSend(Vec<Arc<Mutex<TcpSender>>>),
     UdpSend(Vec<Arc<Mutex<UdpSender>>>),
     TlsSend(Vec<Arc<Mutex<TlsSender>>>),
+    KtlsSend(Vec<Arc<tokio::sync::Mutex<KtlsSender>>>),
     TcpReceive(Vec<Arc<Mutex<TcpReceiver>>>),
     UdpReceive(Vec<Arc<Mutex<UdpReceiver>>>),
     TlsReceive(Vec<Arc<Mutex<TlsReceiver>>>),
+    KtlsReceive(Vec<Arc<tokio::sync::Mutex<KtlsReceiver>>>),
 }
 
-fn handle_client(
+async fn handle_client(
     stream: &mut TcpStream,
     cpu_affinity_manager: Arc<Mutex<crate::utils::cpu_affinity::CpuAffinityManager>>,
     tcp_port_pool: Arc<Mutex<tcp::receiver::TcpPortPool>>,
     udp_port_pool: Arc<Mutex<udp::receiver::UdpPortPool>>,
     tls_port_pool: Arc<Mutex<tls::receiver::TlsPortPool>>,
+    ktls_port_pool: Arc<tokio::sync::Mutex<ktls::receiver::KtlsPortPool>>,
 ) -> BoxResult<()> {
     let mut started = false;
     let peer_addr = stream.peer_addr()?;
@@ -79,9 +91,11 @@ fn handle_client(
     let mut parallel_streams_tcp_send: Vec<Arc<Mutex<TcpSender>>> = Vec::new();
     let mut parallel_streams_udp_send: Vec<Arc<Mutex<UdpSender>>> = Vec::new();
     let mut parallel_streams_tls_send: Vec<Arc<Mutex<TlsSender>>> = Vec::new();
+    let mut parallel_streams_ktls_send: Vec<Arc<tokio::sync::Mutex<KtlsSender>>> = Vec::new();
     let mut parallel_streams_tcp_receive: Vec<Arc<Mutex<TcpReceiver>>> = Vec::new();
     let mut parallel_streams_udp_receive: Vec<Arc<Mutex<UdpReceiver>>> = Vec::new();
     let mut parallel_streams_tls_receive: Vec<Arc<Mutex<TlsReceiver>>> = Vec::new();
+    let mut parallel_streams_ktls_receive: Vec<Arc<tokio::sync::Mutex<KtlsReceiver>>> = Vec::new();
     let mut parallel_streams;
 
     let mut parallel_streams_joinhandles = Vec::new();
@@ -205,6 +219,35 @@ fn handle_client(
                                     stream_ports.push(test.get_port()?);
                                     parallel_streams_tls_receive.push(Arc::new(Mutex::new(test)));
                                 }
+                            } else if family == "ktls" {
+                                log::info!(
+                                    "[{}] preparing for KTLS test with {} streams...",
+                                    &peer_addr,
+                                    stream_count
+                                );
+
+                                let mut c_ktls_port_pool = ktls_port_pool.lock().await;
+
+                                let test_definition = ktls::KtlsTestDefinition::new(&payload)?;
+                                for stream_idx in 0..stream_count {
+                                    log::debug!(
+                                        "[{}] preparing TLS-receiver for stream {}...",
+                                        &peer_addr,
+                                        stream_idx
+                                    );
+                                    let test = KtlsReceiver::new(
+                                        test_definition.clone(),
+                                        &(stream_idx as u8),
+                                        &mut c_ktls_port_pool,
+                                        &peer_addr.ip(),
+                                        // &(payload["receive_buffer"].as_i64().unwrap() as usize),
+                                    )
+                                    .await
+                                    .unwrap();
+                                    stream_ports.push(test.get_port()?);
+                                    parallel_streams_ktls_receive
+                                        .push(Arc::new(tokio::sync::Mutex::new(test)));
+                                }
                             } else {
                                 // TCP
                                 log::info!(
@@ -312,6 +355,33 @@ fn handle_client(
                                         &(payload["no_delay"].as_bool().unwrap()),
                                     )?;
                                     parallel_streams_tls_send.push(Arc::new(Mutex::new(test)));
+                                }
+                            } else if family == "ktls" {
+                                log::info!(
+                                    "[{}] preparing for KTLS test with {} streams...",
+                                    &peer_addr,
+                                    stream_ports.len()
+                                );
+
+                                let test_definition = KtlsTestDefinition::new(&payload)?;
+                                for (stream_idx, port) in stream_ports.iter().enumerate() {
+                                    log::debug!(
+                                        "[{}] preparing TLS-sender for stream {}...",
+                                        &peer_addr,
+                                        stream_idx
+                                    );
+                                    let test = KtlsSender::new(
+                                        test_definition.clone(),
+                                        &(stream_idx as u8),
+                                        &peer_addr.ip(),
+                                        &(port.as_i64().unwrap() as u16),
+                                        &(payload["duration"].as_f64().unwrap() as f32),
+                                        &(payload["send_interval"].as_f64().unwrap() as f32),
+                                        &(payload["send_buffer"].as_i64().unwrap() as usize),
+                                        &(payload["no_delay"].as_bool().unwrap()),
+                                    )?;
+                                    parallel_streams_ktls_send
+                                        .push(Arc::new(tokio::sync::Mutex::new(test)));
                                 }
                             } else {
                                 //TCP
@@ -563,6 +633,65 @@ fn handle_client(
                                         parallel_streams_joinhandles.push(handle);
                                     }
                                 }
+                                ParallelStreams::KtlsReceive(_streams) => {
+                                    for (stream_idx, parallel_stream) in
+                                        parallel_streams_ktls_receive.iter_mut().enumerate()
+                                    {
+                                        log::info!(
+                                            "[{}] beginning execution of stream {}...",
+                                            &peer_addr,
+                                            stream_idx
+                                        );
+                                        let c_ps = Arc::clone(&parallel_stream);
+                                        let c_results_tx = results_tx.clone();
+                                        let c_cam = cpu_affinity_manager.clone();
+                                        let handle = tokio::spawn(async move {
+                                            {
+                                                //set CPU affinity, if enabled
+                                                c_cam.lock().unwrap().set_affinity();
+                                            }
+                                            loop {
+                                                let mut test = c_ps.lock().await;
+                                                log::debug!(
+                                                    "[{}] beginning test-interval for stream {}",
+                                                    &peer_addr,
+                                                    test.get_idx()
+                                                );
+                                                match test.run_interval().await.unwrap() {
+                                                    interval_result => match interval_result {
+                                                        Ok(ir) => match c_results_tx.send(ir) {
+                                                            Ok(_) => (),
+                                                            Err(e) => {
+                                                                log::error!("[{}] unable to process interval-result: {}", &peer_addr, e);
+                                                                break;
+                                                            }
+                                                        },
+                                                        Err(e) => {
+                                                            log::error!(
+                                                                "[{}] unable to process stream: {}",
+                                                                peer_addr,
+                                                                e
+                                                            );
+                                                            match c_results_tx.send(Box::new(crate::protocol::results::ServerFailedResult{stream_idx: test.get_idx()})) {
+                                                        Ok(_) => (),
+                                                        Err(e) => log::error!("[{}] unable to report interval-failed-result: {}", &peer_addr, e),
+                                                    }
+                                                            break;
+                                                        }
+                                                    },
+                                                    // None => {
+                                                    //     match c_results_tx.send(Box::new(crate::protocol::results::ServerDoneResult{stream_idx: test.get_idx()})) {
+                                                    //         Ok(_) => (),
+                                                    //         Err(e) => log::error!("[{}] unable to report interval-done-result: {}", &peer_addr, e),
+                                                    //     }
+                                                    //     break;
+                                                    // }
+                                                }
+                                            }
+                                        });
+                                        // parallel_streams_joinhandles.push(handle);
+                                    }
+                                }
                                 ParallelStreams::TcpSend(_streams) => {
                                     for (stream_idx, parallel_stream) in
                                         parallel_streams_tcp_send.iter_mut().enumerate()
@@ -746,6 +875,65 @@ fn handle_client(
                                         parallel_streams_joinhandles.push(handle);
                                     }
                                 }
+                                ParallelStreams::KtlsSend(_streams) => {
+                                    for (stream_idx, parallel_stream) in
+                                        parallel_streams_ktls_receive.iter_mut().enumerate()
+                                    {
+                                        log::info!(
+                                            "[{}] beginning execution of stream {}...",
+                                            &peer_addr,
+                                            stream_idx
+                                        );
+                                        let c_ps = Arc::clone(&parallel_stream);
+                                        let c_results_tx = results_tx.clone();
+                                        let c_cam = cpu_affinity_manager.clone();
+                                        let handle = tokio::spawn(async move {
+                                            {
+                                                //set CPU affinity, if enabled
+                                                c_cam.lock().unwrap().set_affinity();
+                                            }
+                                            loop {
+                                                let mut test = c_ps.lock().await;
+                                                log::debug!(
+                                                    "[{}] beginning test-interval for stream {}",
+                                                    &peer_addr,
+                                                    test.get_idx()
+                                                );
+                                                match test.run_interval().await.unwrap() {
+                                                    interval_result => match interval_result {
+                                                        Ok(ir) => match c_results_tx.send(ir) {
+                                                            Ok(_) => (),
+                                                            Err(e) => {
+                                                                log::error!("[{}] unable to process interval-result: {}", &peer_addr, e);
+                                                                break;
+                                                            }
+                                                        },
+                                                        Err(e) => {
+                                                            log::error!(
+                                                                "[{}] unable to process stream: {}",
+                                                                peer_addr,
+                                                                e
+                                                            );
+                                                            match c_results_tx.send(Box::new(crate::protocol::results::ServerFailedResult{stream_idx: test.get_idx()})) {
+                                                        Ok(_) => (),
+                                                        Err(e) => log::error!("[{}] unable to report interval-failed-result: {}", &peer_addr, e),
+                                                    }
+                                                            break;
+                                                        }
+                                                    },
+                                                    // None => {
+                                                    //     match c_results_tx.send(Box::new(crate::protocol::results::ServerDoneResult{stream_idx: test.get_idx()})) {
+                                                    //         Ok(_) => (),
+                                                    //         Err(e) => log::error!("[{}] unable to report interval-done-result: {}", &peer_addr, e),
+                                                    //     }
+                                                    //     break;
+                                                    // }
+                                                }
+                                            }
+                                        });
+                                        // parallel_streams_joinhandles.push(handle);
+                                    }
+                                }
                             }
 
                             started = true;
@@ -893,7 +1081,7 @@ impl Drop for ClientThreadMonitor {
     }
 }
 
-pub fn serve(args: ArgMatches) -> BoxResult<()> {
+pub async fn serve(args: ArgMatches<'_>) -> BoxResult<()> {
     //config-parsing and pre-connection setup
     let tcp_port_pool = Arc::new(Mutex::new(tcp::receiver::TcpPortPool::new(
         args.value_of("tcp_port_pool").unwrap().to_string(),
@@ -904,6 +1092,10 @@ pub fn serve(args: ArgMatches) -> BoxResult<()> {
         args.value_of("udp6_port_pool").unwrap().to_string(),
     )));
     let tls_port_pool = Arc::new(Mutex::new(tls::receiver::TlsPortPool::new(
+        args.value_of("tls_port_pool").unwrap().to_string(),
+        args.value_of("tls6_port_pool").unwrap().to_string(),
+    )));
+    let ktls_port_pool = Arc::new(tokio::sync::Mutex::new(ktls::receiver::KtlsPortPool::new(
         args.value_of("tls_port_pool").unwrap().to_string(),
         args.value_of("tls6_port_pool").unwrap().to_string(),
     )));
@@ -964,28 +1156,32 @@ pub fn serve(args: ArgMatches) -> BoxResult<()> {
                                 let c_tcp_port_pool = tcp_port_pool.clone();
                                 let c_udp_port_pool = udp_port_pool.clone();
                                 let c_tls_port_pool = tls_port_pool.clone();
-                                let thread_builder =
-                                    thread::Builder::new().name(address.to_string().into());
-                                thread_builder.spawn(move || {
-                                    //ensure the client is accounted-for even if the handler panics
-                                    let _client_thread_monitor = ClientThreadMonitor {
-                                        client_address: address.to_string(),
-                                    };
+                                let c_ktls_port_pool = ktls_port_pool.clone();
+                                // let thread_builder =
+                                //     thread::Builder::new().name(address.to_string().into());
+                                // tokio::spawn(async move {
+                                //ensure the client is accounted-for even if the handler panics
+                                let _client_thread_monitor = ClientThreadMonitor {
+                                    client_address: address.to_string(),
+                                };
 
-                                    match handle_client(
-                                        &mut stream,
-                                        c_cam,
-                                        c_tcp_port_pool,
-                                        c_udp_port_pool,
-                                        c_tls_port_pool,
-                                    ) {
-                                        Ok(_) => (),
-                                        Err(e) => log::error!("error in client-handler: {}", e),
-                                    }
+                                match handle_client(
+                                    &mut stream,
+                                    c_cam,
+                                    c_tcp_port_pool,
+                                    c_udp_port_pool,
+                                    c_tls_port_pool,
+                                    c_ktls_port_pool,
+                                )
+                                .await
+                                {
+                                    Ok(_) => (),
+                                    Err(e) => log::error!("error in client-handler: {}", e),
+                                }
 
-                                    //in the event of panic, this will happen when the stream is dropped
-                                    stream.shutdown(Shutdown::Both).unwrap_or_default();
-                                })?;
+                                //in the event of panic, this will happen when the stream is dropped
+                                stream.shutdown(Shutdown::Both).unwrap_or_default();
+                                // });
                             }
                         }
                         Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {

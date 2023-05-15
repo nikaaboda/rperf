@@ -134,6 +134,14 @@ async fn main() {
                 .required(false)
         )
         .arg(
+            Arg::with_name("ktls")
+                .help("use KTLS rather than TCP")
+                .takes_value(false)
+                .long("ktls")
+                .short("KT")
+                .required(false)
+        )
+        .arg(
             Arg::with_name("bandwidth")
                 .help("target bandwidth in bytes/sec; this value is applied to each stream, with a default target of 1 megabit/second for all protocols (note: megabit, not mebibit); the suffixes kKmMgG can also be used for xbit and xbyte, respectively")
                 .takes_value(true)
@@ -278,11 +286,11 @@ async fn main() {
         }).expect("unable to set SIGINT handler");
         
         log::debug!("beginning normal operation...");
-        let service = server::serve(args);
-        if service.is_err() {
-            log::error!("unable to run server: {}", service.unwrap_err());
-            std::process::exit(4);
-        }
+        let service = server::serve(args).await.unwrap();
+        // if service.is_err() {
+        //     log::error!("unable to run server: {}", service.unwrap_err());
+        //     std::process::exit(4);
+        // }
     } else if args.is_present("client") {
         log::debug!("registering SIGINT handler...");
         ctrlc::set_handler(move || {

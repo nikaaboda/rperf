@@ -752,7 +752,7 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
                 };
             },
             ParallelStreams::KtlsReceive(_streams) => {
-                for (stream_idx, parallel_stream) in parallel_streams_ktls_send.iter_mut().enumerate() {
+                for (stream_idx, parallel_stream) in parallel_streams_ktls_receive.iter_mut().enumerate() {
                     log::info!("beginning execution of stream {}...", stream_idx);
                     let c_ps = Arc::clone(&parallel_stream);
                     let c_results_tx = results_tx.clone();
