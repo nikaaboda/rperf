@@ -3,7 +3,7 @@ extern crate nix;
 use nix::sys::socket::{setsockopt, sockopt::SndBuf};
 
 use crate::protocol::results::{
-    get_unix_timestamp, IntervalResult, TlsReceiveResult, TlsSendResult,
+    get_unix_timestamp, IntervalResult, KtlsReceiveResult, KtlsSendResult,
 };
 use std::os::fd::{AsRawFd, RawFd};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -68,7 +68,7 @@ impl KtlsTestDefinition {
 
 pub mod receiver {
     use std::fs::File;
-    use std::io::Read;
+    use std::io::{Read, Write};
     use std::mem::swap;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::sync::{Arc, Mutex};
@@ -76,6 +76,7 @@ pub mod receiver {
     use std::vec;
 
     use ktls::CorkStream;
+    use rcgen::generate_simple_self_signed;
     use rustls::cipher_suite::TLS13_AES_128_GCM_SHA256;
     use rustls::version::TLS13;
     use rustls::{Certificate, KeyLogFile, PrivateKey, ServerConfig};
@@ -262,19 +263,31 @@ pub mod receiver {
                 listener.local_addr()?
             );
 
-            let mut server_cert_der = Vec::new();
-            let mut server_key_der = Vec::new();
-            File::open("server_cert.der")
-                .expect("Unable to open cert file")
-                .read_to_end(&mut server_cert_der)
-                .expect("Unable to read cert data");
-            File::open("server_key.der")
-                .expect("Unable to open key file")
-                .read_to_end(&mut server_key_der)
-                .expect("Unable to read key data");
+            // let mut server_cert_der = Vec::new();
+            // let mut server_key_der = Vec::new();
+            // File::open("server_cert.der")
+            //     .expect("Unable to open cert file")
+            //     .read_to_end(&mut server_cert_der)
+            //     .expect("Unable to read cert data");
+            // File::open("server_key.der")
+            //     .expect("Unable to open key file")
+            //     .read_to_end(&mut server_key_der)
+            //     .expect("Unable to read key data");
 
-            let server_cert = Certificate(server_cert_der);
-            let server_key = PrivateKey(server_key_der);
+            // let server_cert = Certificate(server_cert_der);
+            // let server_key = PrivateKey(server_key_der);
+
+            let subject_alt_names = vec!["localhost".to_string()];
+            let cert = generate_simple_self_signed(subject_alt_names).unwrap();
+
+            let cert_pem = cert.serialize_der().unwrap();
+            let key_pem = cert.serialize_private_key_der();
+
+            let mut cert_file = File::create("server_cert.der").unwrap();
+            let mut key_file = File::create("server_key.der").unwrap();
+            cert_file.write_all(&cert_pem).unwrap();
+            key_file.write_all(&key_pem).unwrap();
+            
 
             let mut tls_config = ServerConfig::builder()
                 .with_cipher_suites(&[TLS13_AES_128_GCM_SHA256])
@@ -282,7 +295,7 @@ pub mod receiver {
                 .with_protocol_versions(&[&TLS13])
                 .expect("incosistent cipher-suite and protocol-version")
                 .with_no_client_auth()
-                .with_single_cert(vec![server_cert], server_key)
+                .with_single_cert(vec![rustls::Certificate(cert_pem)], rustls::PrivateKey(key_pem))
                 .expect("bad certificate/private key");
 
             tls_config.enable_secret_extraction = true; // for ktls
@@ -319,26 +332,28 @@ pub mod receiver {
                         self.stream_idx
                     )));
                 }
-
-                let result = tokio::time::timeout(POLL_TIMEOUT, listener.accept()).await;
-
-                match result {
-                    Ok(Ok((stream, address))) => {
-                        log::info!(
-                            "received TCP stream {} connection from {}",
-                            self.stream_idx,
-                            address
-                        );
-                        return Ok(stream);
-                    }
-                    Ok(Err(e)) => {
-                        return Err(Box::new(e));
-                    }
-                    Err(_) => {
-                        // Timeout occurred
-                        log::info!("timeout occured");
+                
+                loop {
+                    match listener.accept().await {
+                        Ok((stream, address)) => {
+                            log::info!(
+                                "received TCP stream {} connection from {}",
+                                self.stream_idx,
+                                address
+                            );
+                            return Ok(stream);
+                        }
+                        Err(e) => {
+                            return Err(Box::new(e));
+                        }
+                        Err(_) => {
+                            // Timeout occurred
+                            log::info!("timeout occured");
+                        }
                     }
                 }
+
+                
             }
 
             Err(Box::new(simple_error::simple_error!(
@@ -366,13 +381,20 @@ pub mod receiver {
                 self.listener = None; //drop it, closing the socket
             }
 
-            let mut stream_clone = Default::default();
-            swap(&mut stream_clone, &mut self.stream);
+            let stream = self.stream.as_mut().unwrap();
 
-            let stream = SpyStream(stream_clone.unwrap());
-            let stream = CorkStream::new(stream);
-            let stream = self.tls_acceptor.accept(stream).await.unwrap();
-            let mut stream = ktls::config_ktls_server(stream).await.unwrap();
+            // let stream = SpyStream(stream);
+            // let stream = CorkStream::new(stream);
+            let mut stream = self.tls_acceptor.accept(stream).await.map_err(|err| {
+                log::error!("TlsAcceptorErr: {err:?}");
+                err
+            }).unwrap();
+
+            // tokio::time::sleep(Duration::from_millis(100)).await;
+            // let mut stream = ktls::config_ktls_server(stream).await.map_err(|err| {
+            //     log::error!("KTlsAcceptorErr: {err:?}");
+            //     err
+            // }).unwrap();
 
             let mut buf = vec![0_u8; self.test_definition.length];
 
@@ -386,33 +408,36 @@ pub mod receiver {
                     ))));
                 }
                 log::info!("ktls reading");
-                match stream.read_exact(&mut buf).await.unwrap() {
-                    packet_size => {
-                        if packet_size == 0 {
-                            //test's over
-                            self.active = false; //HACK: can't call self.stop() because it's a double-borrow due to the unwrapped stream
-                            break;
-                        }
 
-                        bytes_received += packet_size as u64;
-
-                        let elapsed_time = start.elapsed();
-                        if elapsed_time >= super::INTERVAL {
-                            return Some(Ok(Box::new(super::TlsReceiveResult {
-                                timestamp: super::get_unix_timestamp(),
-
-                                stream_idx: self.stream_idx,
-
-                                duration: elapsed_time.as_secs_f32(),
-
-                                bytes_received: bytes_received,
-                            })));
+                loop {
+                    match stream.read_exact(&mut buf).await.unwrap() {
+                        packet_size => {
+                            if packet_size == 0 {
+                                //test's over
+                                self.active = false; //HACK: can't call self.stop() because it's a double-borrow due to the unwrapped stream
+                                break;
+                            }
+    
+                            bytes_received += packet_size as u64;
+    
+                            let elapsed_time = start.elapsed();
+                            if elapsed_time >= super::INTERVAL {
+                                return Some(Ok(Box::new(super::KtlsReceiveResult {
+                                    timestamp: super::get_unix_timestamp(),
+    
+                                    stream_idx: self.stream_idx,
+    
+                                    duration: elapsed_time.as_secs_f32(),
+    
+                                    bytes_received: bytes_received,
+                                })));
+                            }
                         }
                     }
                 }
             }
             if bytes_received > 0 {
-                Some(Ok(Box::new(super::TlsReceiveResult {
+                Some(Ok(Box::new(super::KtlsReceiveResult {
                     timestamp: super::get_unix_timestamp(),
 
                     stream_idx: self.stream_idx,
@@ -451,17 +476,20 @@ pub mod receiver {
 pub mod sender {
     use std::fs::File;
     use std::io::Read;
-    use std::mem::swap;
+    // use std::mem::swap;
     use std::net::{IpAddr, SocketAddr};
     use std::os::unix::io::AsRawFd;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use ktls::CorkStream;
+    use rustls::cipher_suite::TLS13_AES_128_GCM_SHA256;
+    use rustls::version::TLS13;
     use tokio::io::AsyncWriteExt;
-    use tokio_rustls::rustls::cipher_suite::TLS13_AES_128_GCM_SHA256;
-    use tokio_rustls::rustls::version::TLS13;
-    use tokio_rustls::rustls::{Certificate, ClientConfig, RootCertStore};
+    // use rustls::cipher_suite::TLS13_AES_128_GCM_SHA256;
+    // use rustls::version::TLS13;
+    use rustls::{Certificate, ClientConfig, RootCertStore};
+    // use ktls::KtlsStream;
 
     use std::thread::sleep;
 
@@ -469,7 +497,7 @@ pub mod sender {
 
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
     const WRITE_TIMEOUT: Duration = Duration::from_millis(50);
-    const BUFFER_FULL_TIMEOUT: Duration = Duration::from_millis(1);
+    // const BUFFER_FULL_TIMEOUT: Duration = Duration::from_millis(1);
 
     pub struct KtlsSender {
         active: bool,
@@ -487,8 +515,6 @@ pub mod sender {
 
         send_buffer: usize,
         no_delay: bool,
-
-        tls_connector: tokio_rustls::TlsConnector,
     }
 
     impl KtlsSender {
@@ -508,30 +534,10 @@ pub mod sender {
                 staged_buffer[i] = (i % 256) as u8;
             }
             //embed the test ID
+
             staged_buffer[0..16].copy_from_slice(&test_definition.test_id);
 
-            let mut server_cert_der = Vec::new();
-            File::open("server_cert.der")
-                .expect("Unable to open file")
-                .read_to_end(&mut server_cert_der)
-                .expect("Unable to read data");
-
-            let server_cert = Certificate(server_cert_der);
-
-            let mut root_certs = RootCertStore::empty();
-            root_certs.add(&server_cert).unwrap();
-
-            let config = ClientConfig::builder()
-                .with_cipher_suites(&[TLS13_AES_128_GCM_SHA256])
-                .with_safe_default_kx_groups()
-                .with_protocol_versions(&[&TLS13])
-                .expect("inconsistent cipher-suite/versions selected")
-                .with_root_certificates(root_certs)
-                .with_no_client_auth();
-
             
-
-            let tls_connector = tokio_rustls::TlsConnector::from(Arc::new(config));
 
             Ok(KtlsSender {
                 active: true,
@@ -548,8 +554,6 @@ pub mod sender {
 
                 send_buffer: send_buffer.to_owned(),
                 no_delay: no_delay.to_owned(),
-
-                tls_connector: tls_connector,
             })
         }
 
@@ -603,7 +607,7 @@ pub mod sender {
             &mut self,
         ) -> Option<super::BoxResult<Box<dyn super::IntervalResult + Sync + Send>>> {
             if self.stream.is_none() {
-                //if still in the setup phase, connect to the receiver
+                // if still in the setup phase, connect to the receiver
                 match self.process_connection() {
                     Ok(stream) => {
                         self.stream = Some(stream);
@@ -614,22 +618,47 @@ pub mod sender {
                 }
             }
 
-            log::info!("started ktls conversion");
-            let ip_addr = &"localhost".to_string()[..];
-            let server_name = ip_addr
-                .try_into()
-                .expect("IP address is not valid server name");
-            // let stream = self.stream.as_mut().unwrap();
-            let mut stream_clone = Default::default();
-            swap(&mut stream_clone, &mut self.stream);
-            let stream = SpyStream(stream_clone.expect("could not finish spy stream"));
-            let stream = CorkStream::new(stream);
-            let stream = self
-                .tls_connector
-                .connect(server_name, stream)
-                .await
-                .expect("finish tls connection");
-            let mut stream = ktls::config_ktls_client(stream).await.expect("finish ktls config");
+
+            log::info!("started ktls conversion: {:?}", self.stream_idx);
+            let stream = self.stream.as_mut().unwrap();
+
+            let mut server_cert_der = Vec::new();
+            File::open("server_cert.der")
+                .expect("Unable to open file")
+                .read_to_end(&mut server_cert_der)
+                .expect("Unable to read data");
+
+
+            let server_cert = Certificate(server_cert_der);
+
+            let mut root_certs = RootCertStore::empty();
+            root_certs.add(&server_cert).unwrap();
+
+            let config = ClientConfig::builder()
+                .with_cipher_suites(&[TLS13_AES_128_GCM_SHA256])
+                // .with_safe_default_cipher_suites()
+                .with_safe_default_kx_groups()
+                .with_protocol_versions(&[&TLS13])
+                // .with_safe_default_protocol_versions()
+                .expect("inconsistent cipher-suite/versions selected")
+                .with_root_certificates(root_certs)
+                .with_no_client_auth();
+
+            // config.enable_secret_extraction = true;
+            // config.enable_tickets = false;
+
+            let tls_connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+            // let stream = SpyStream(stream);
+            // let stream = CorkStream::new(stream);
+            let mut stream = tls_connector
+                .connect("localhost".try_into().unwrap(), stream)
+                .await.map_err(|err| {
+                    log::error!("TlsCOnnectorErr: {err:?}");
+                    err
+                }).unwrap();
+
+            // let mut stream = ktls::config_ktls_client(stream).await.expect("finish ktls config");
+            
             log::info!("finished ktls conversion");
 
             let interval_duration = Duration::from_secs_f32(self.send_interval);
@@ -649,40 +678,35 @@ pub mod sender {
             while self.active && self.remaining_duration > 0.0 && bytes_to_send_remaining > 0 {
                 let packet_start = Instant::now();
                 log::info!("ktls writing");
-                match stream.write_all(&mut self.staged_buffer).await.unwrap() {
-                    //it doesn't matter if the whole thing couldn't be written, since it's just garbage data
-                    empty => {
-                        let packet_size = self.staged_buffer.len();
-                        let bytes_written = packet_size as i64;
-                        bytes_sent += packet_size as u64;
-                        bytes_to_send_remaining -= bytes_written;
-                        bytes_to_send_per_interval_slice_remaining -= bytes_written;
+                stream.write_all(&mut self.staged_buffer).await.unwrap();
+                stream.flush().await.unwrap();
+            
+                //it doesn't matter if the whole thing couldn't be written, since it's just garbage data
+                
+                let packet_size = self.staged_buffer.len();
+                log::info!("packet size {}", packet_size);
+                let bytes_written = packet_size as i64;
+                bytes_sent += packet_size as u64;
+                bytes_to_send_remaining -= bytes_written;
+                bytes_to_send_per_interval_slice_remaining -= bytes_written;
 
-                        let elapsed_time = cycle_start.elapsed();
-                        if elapsed_time >= super::INTERVAL {
-                            self.remaining_duration -= packet_start.elapsed().as_secs_f32();
+                let elapsed_time = cycle_start.elapsed();
+                if elapsed_time >= super::INTERVAL {
+                    self.remaining_duration -= packet_start.elapsed().as_secs_f32();
 
-                            return Some(Ok(Box::new(super::TlsSendResult {
-                                timestamp: super::get_unix_timestamp(),
+                    return Some(Ok(Box::new(super::KtlsSendResult {
+                        timestamp: super::get_unix_timestamp(),
 
-                                stream_idx: self.stream_idx,
+                        stream_idx: self.stream_idx,
 
-                                duration: elapsed_time.as_secs_f32(),
+                        duration: elapsed_time.as_secs_f32(),
 
-                                bytes_sent: bytes_sent,
-                                sends_blocked: sends_blocked,
-                            })));
-                        }
-                    } // Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                      //     //send-buffer is full
-                      //     //nothing to do, but avoid burning CPU cycles
-                      //     sleep(BUFFER_FULL_TIMEOUT);
-                      //     sends_blocked += 1;
-                      // }
-                      // Err(e) => {
-                      //     return Some(Err(Box::new(e)));
-                      // }
+                        bytes_sent: bytes_sent,
+                        sends_blocked: sends_blocked,
+                    })));
                 }
+                    
+                
 
                 if bytes_to_send_remaining <= 0 {
                     //interval's target is exhausted, so sleep until the end
@@ -700,10 +724,11 @@ pub mod sender {
                         sleep(interval_endtime - elapsed_time);
                     }
                 }
+                log::info!("I come here");
                 self.remaining_duration -= packet_start.elapsed().as_secs_f32();
             }
             if bytes_sent > 0 {
-                Some(Ok(Box::new(super::TlsSendResult {
+                Some(Ok(Box::new(super::KtlsSendResult {
                     timestamp: super::get_unix_timestamp(),
 
                     stream_idx: self.stream_idx,
@@ -715,7 +740,7 @@ pub mod sender {
                 })))
             } else {
                 //indicate that the test is over by dropping the stream
-                self.stream = None;
+                // self.stream = None;
                 None
             }
         }
@@ -816,10 +841,17 @@ where
     }
 }
 
-impl<IO> AsRawFd for SpyStream<IO>
-where
-    IO: AsRawFd,
-{
+// impl<IO> AsRawFd for SpyStream<IO>
+// where
+//     IO: AsRawFd,
+// {
+//     fn as_raw_fd(&self) -> RawFd {
+//         self.0.as_raw_fd()
+//     }
+// }
+
+impl<IO> AsRawFd for SpyStream<&mut IO>
+where IO: AsRawFd {
     fn as_raw_fd(&self) -> RawFd {
         self.0.as_raw_fd()
     }

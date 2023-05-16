@@ -410,17 +410,6 @@ async fn handle_client(
                         }
                     }
                     "begin" => {
-                        log::info!("began");
-                        //the client has indicated that testing can begin
-                        let tcp_json = serde_json::json!("tcp");
-                        let download_json = &serde_json::json!("download");
-                        let family = payload.get("family").unwrap_or(&tcp_json).as_str().unwrap();
-                        let action = payload
-                            .get("role")
-                            .unwrap_or(download_json)
-                            .as_str()
-                            .unwrap();
-
                         log::info!("initialized parallel streams. started: {}", started);
 
                         if !started {
@@ -612,7 +601,7 @@ async fn handle_client(
                             for (stream_idx, parallel_stream) in
                                 parallel_streams_ktls_receive.iter_mut().enumerate()
                             {
-                                
+                                log::info!("hello: {}", stream_idx);
                                 log::info!(
                                     "[{}] beginning execution of stream {}...",
                                     &peer_addr,
@@ -849,7 +838,7 @@ async fn handle_client(
                             }
                         
                             for (stream_idx, parallel_stream) in
-                                parallel_streams_ktls_receive.iter_mut().enumerate()
+                                parallel_streams_ktls_send.iter_mut().enumerate()
                             {
                                 log::info!(
                                     "[{}] beginning execution of stream {}...",

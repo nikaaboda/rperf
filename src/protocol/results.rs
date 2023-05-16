@@ -719,7 +719,7 @@ impl IntervalResult for KtlsSendResult {
         };
         
         let mut output = format!("----------\n\
-                 TLS send result over {:.2}s | stream: {}\n\
+                 KTLS send result over {:.2}s | stream: {}\n\
                  bytes: {} | per second: {:.3} | {}",
                 self.duration, self.stream_idx,
                 self.bytes_sent, bytes_per_second, throughput,

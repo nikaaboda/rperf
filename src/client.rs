@@ -40,7 +40,7 @@ use crate::protocol::results::{IntervalResult, IntervalResultKind, TestResults, 
 
 // use crate::stream::TestStream;
 use crate::stream::tcp;
-use crate::stream::{tcp::receiver::TcpReceiver, tcp::sender::TcpSender, udp::receiver::UdpReceiver, udp::sender::UdpSender, tls::receiver::TlsReceiver, tls::sender::TlsSender, ktls::sender::KtlsSender, ktls::receiver::KtlsReceiver, ktls::KtlsTestDefinition, ktls::receiver::KtlsPortPool};
+use crate::stream::{ktls::sender::KtlsSender, ktls::receiver::KtlsReceiver, ktls::KtlsTestDefinition, ktls::receiver::KtlsPortPool};
 use crate::stream::udp;
 use crate::stream::tls;
 
@@ -259,6 +259,7 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
                             }
                         },
                         _ => {
+                            // log::info!("result.to_json(): {:?}", result.to_json());
                             tr.update_from_json(result.to_json())?;
                         }
                     }
@@ -589,9 +590,10 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
                 }
                 loop {
                     let mut test = c_ps.lock().await;
+                    log::info!("calling run interval");
                     // log::debug!("beginning test-interval for stream {}", test.get_idx());
-                    match test.run_interval().await.unwrap() {
-                        interval_result => match interval_result {
+                    match test.run_interval().await {
+                        Some(interval_result) => match interval_result {
                             Ok(ir) => match c_results_tx.send(ir) {
                                 Ok(_) => (),
                                 Err(e) => {
@@ -608,13 +610,13 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
                                 break;
                             },
                         },
-                        // None => {
-                        //     match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
-                        //         Ok(_) => (),
-                        //         Err(e) => log::error!("unable to report interval-done-result: {}", e),
-                        //     }
-                        //     break;
-                        // },
+                        None => {
+                            match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
+                                Ok(_) => (),
+                                Err(e) => log::error!("unable to report interval-done-result: {}", e),
+                            }
+                            break;
+                        },
                     }
                 }
             });
@@ -765,8 +767,8 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
                 loop {
                     let mut test = c_ps.lock().await;
                     log::debug!("beginning test-interval for stream {}", test.get_idx());
-                    match test.run_interval().await.unwrap() {
-                        interval_result => match interval_result {
+                    match test.run_interval().await {
+                        Some(interval_result) => match interval_result {
                             Ok(ir) => match c_results_tx.send(ir) {
                                 Ok(_) => (),
                                 Err(e) => {
@@ -783,13 +785,13 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
                                 break;
                             },
                         },
-                        // None => {
-                        //     match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
-                        //         Ok(_) => (),
-                        //         Err(e) => log::error!("unable to report interval-done-result: {}", e),
-                        //     }
-                        //     break;
-                        // },
+                        None => {
+                            match c_results_tx.send(Box::new(crate::protocol::results::ClientDoneResult{stream_idx: test.get_idx()})) {
+                                Ok(_) => (),
+                                Err(e) => log::error!("unable to report interval-done-result: {}", e),
+                            }
+                            break;
+                        },
                     }
                 }
             });
@@ -809,6 +811,7 @@ pub async fn execute(args:ArgMatches<'_>) -> BoxResult<()> {
                                         println!("{}", result.to_string(display_bit));
                                     }
                                     let mut tr = test_results.lock().unwrap();
+                                    log::info!("payload: {:?}", payload);
                                     tr.update_from_json(payload)?;
                                 },
                                 "done" | "failed" => match payload.get("stream_idx") { //completion-result from the server
